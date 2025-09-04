@@ -75,7 +75,7 @@ const CONFIG = {
 3. Change it to **"setupSync"**
 4. Click the **Run** button (▶️)
 
-*[Screenshot placeholder: Function dropdown showing setupSync selected]*
+![Function dropdown showing setupSync selected](./assets/app-script-run-setupsync.png)
 
 ### Step 6: Grant Permissions
 
