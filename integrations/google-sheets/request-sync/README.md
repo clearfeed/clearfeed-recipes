@@ -87,8 +87,6 @@ When you run the script for the first time, Google will ask for permissions:
 4. Click **"Go to [Your Project Name] (unsafe)"**
 5. Click **"Allow"** to grant the necessary permissions
 
-*[Screenshot placeholder: Permission dialog screens]*
-
 ### Step 7: Verify the Setup
 
 1. Go back to your Google Sheet
