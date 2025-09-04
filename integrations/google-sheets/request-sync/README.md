@@ -33,7 +33,7 @@ Before you begin, make sure you have:
 4. Paste the entire script into the editor
 5. Click the **Save** button (💾) or press `Ctrl+S` (Windows) / `Cmd+S` (Mac)
 
-*[Screenshot placeholder: Apps Script editor with code pasted]*
+![Apps Script editor with code pasted](./assets/app-script-code-gs-example.png)
 
 ### Step 4: Configure the Script
 
