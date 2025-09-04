@@ -1,4 +1,4 @@
-# ClearFeed to Google Sheets Sync
+# ClearFeed Requests to Google Sheets Sync
 
 Automatically sync your ClearFeed requests to Google Sheets with this Google Apps Script integration. The script runs hourly to keep your spreadsheet up-to-date with the latest request data from ClearFeed.
 
