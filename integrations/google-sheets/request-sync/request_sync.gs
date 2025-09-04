@@ -5,7 +5,8 @@ const CONFIG = {
   COLLECTION_ID: null, // Replace with your collection ID or set to null/empty to fetch from all collections
   SHEET_NAME: "ClearFeed Requests", // Name of the sheet tab
   SPREADSHEET_ID: "", // Leave empty to use current spreadsheet, or specify ID
-  INITIAL_DAYS_BACK: 14 // For initial sync, fetch requests from this many days back
+  INITIAL_DAYS_BACK: 14, // For initial sync, fetch requests from this many days back
+  INCLUDE_MESSAGES: false // Set to true to include messages in the sync (disabled by default)
 };
 
 const BASE_URL="https://api.clearfeed.app/v1/rest/requests";
@@ -89,6 +90,11 @@ function fetchClearfeedRequests(isInitialSync, lastSyncTime = null) {
     // Add cursor for pagination (skip on first request)
     if (nextCursor) {
       params.next_cursor = nextCursor;
+    }
+    
+    // Include messages if configured
+    if (CONFIG.INCLUDE_MESSAGES) {
+      params.include = "messages";
     }
     
     // Set up time filtering based on sync type
@@ -305,7 +311,12 @@ function extractRequestData(request, headers) {
   const flatRequest = flattenObject(request);
   
   return headers.map(header => {
-    const value = flatRequest[header];
+    let value = flatRequest[header];
+    
+    // Special handling for messages column
+    if (header === 'messages' && Array.isArray(request.messages)) {
+      value = formatMessages(request.messages);
+    }
     
     // Handle different data types
     if (value === null || value === undefined) {
@@ -321,6 +332,20 @@ function extractRequestData(request, headers) {
 }
 
 /**
+ * Format messages array for sheet display
+ */
+function formatMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return [];
+  }
+  
+  return messages.map(message => {
+    const prefix = message.is_responder ? "r" : "nr";
+    return [prefix, message.text || ""];
+  });
+}
+
+/**
  * Flatten nested objects for easier sheet representation
  */
 function flattenObject(obj, prefix = '') {
@@ -331,7 +356,10 @@ function flattenObject(obj, prefix = '') {
       const value = obj[key];
       const newKey = prefix ? `${prefix}.${key}` : key;
       
-      if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+      // Special handling for messages array - don't flatten it
+      if (key === 'messages' && Array.isArray(value)) {
+        flattened[newKey] = value;
+      } else if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
         // Recursively flatten nested objects
         Object.assign(flattened, flattenObject(value, newKey));
       } else {

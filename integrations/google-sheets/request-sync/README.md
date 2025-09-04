@@ -68,6 +68,11 @@ const CONFIG = {
 
 5. **INITIAL_DAYS_BACK**: How many days of historical data to fetch during the first sync (default: 14 days)
 
+6. **INCLUDE_MESSAGES**: Set to `true` to include message conversations in the sync (default: `false`)
+   - When enabled, adds a "messages" column with formatted conversation data
+   - Messages are formatted as `[["r", "message text"], ["nr", "other message"]]` where "r" = responder, "nr" = non-responder
+   - Note: Including messages will increase sync time and data usage
+
 ### Step 5: Save and Set Up the Sync
 
 1. After updating the configuration, save the script again
@@ -147,6 +152,13 @@ Controls how much historical data to fetch during the initial sync:
 - **30 days**: More historical context
 - **7 days**: Minimal historical data for faster initial sync
 - **90 days**: Maximum recommended for large datasets
+
+### INCLUDE_MESSAGES
+Controls whether to include message conversations in the sync:
+- **`false`** (default): Faster sync, smaller data footprint
+- **`true`**: Includes full conversation history for each request
+- Messages are formatted as nested arrays: `[["r", "responder message"], ["nr", "customer message"]]`
+- Useful for analyzing conversation patterns and response quality
 
 ## Frequently Asked Questions
 
