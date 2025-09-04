@@ -23,7 +23,7 @@ Before you begin, make sure you have:
 2. Select **Apps Script** from the dropdown menu
 3. This will open the Google Apps Script editor in a new tab
 
-*[Screenshot placeholder: Accessing Apps Script from Extensions menu]*
+![Accessing Apps Script from Extensions menu](./assets/app-script-in-extension.png)
 
 ### Step 3: Add the ClearFeed Sync Script
 
