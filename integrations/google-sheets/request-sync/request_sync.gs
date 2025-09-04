@@ -12,6 +12,7 @@ const CONFIG = {
 const BASE_URL="https://api.clearfeed.app/v1/rest/requests";
 const LAST_SYNC_PROPERTY = "LAST_SYNC_PROPERTY";
 
+
 /**
  * Main function to sync Clearfeed requests
  * Can be called manually or via trigger

@@ -76,9 +76,8 @@ const CONFIG = {
 ### Step 5: Save and Set Up the Sync
 
 1. After updating the configuration, save the script again
-2. In the Apps Script editor, find the function dropdown (it should show "syncClearfeedRequests")
-3. Change it to **"setupSync"**
-4. Click the **Run** button (▶️)
+2. In the Apps Script editor, the function dropdown should show **"setupSync"** by default (it's the first function)
+3. Click the **Run** button (▶️)
 
 ![Function dropdown showing setupSync selected](./assets/app-script-run-setupsync.png)
 
