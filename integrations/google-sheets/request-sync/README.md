@@ -94,7 +94,7 @@ When you run the script for the first time, Google will ask for permissions:
 3. The sheet should contain your ClearFeed request data
 4. In the menu bar, you should see a new **"Clearfeed Sync"** menu
 
-*[Screenshot placeholder: Google Sheet with ClearFeed data and custom menu]*
+![Custom Clearfeed Sync menu expanded](./assets/sheet-clearfeed-menu.png)
 
 ## Understanding the Sync Process
 
@@ -112,7 +112,7 @@ After the initial sync, the script runs **incremental syncs** every hour:
 - Much faster than re-downloading all data
 
 ### Automatic Scheduling
-The script automatically sets up an hourly trigger that runs in Pacific timezone. You don't need to do anything - it will keep your data synchronized automatically.
+The script automatically sets up an hourly trigger aligned with Pacific timezone hour boundaries. You don't need to do anything - it will keep your data synchronized automatically.
 
 ## Using the Custom Menu
 
@@ -157,19 +157,6 @@ Controls how much historical data to fetch during the initial sync:
    - Configure each with a different `COLLECTION_ID`
    - Use different `SHEET_NAME` values if using the same spreadsheet
 
-### Q: How do I sync to multiple tabs in the same spreadsheet?
-**A:** 
-1. Get your spreadsheet ID from the URL: `https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit`
-2. Create separate Apps Script projects for each collection
-3. Set the same `SPREADSHEET_ID` in each script's config
-4. Use different `SHEET_NAME` values for each collection
-
-### Q: What happens if I change the configuration after setup?
-**A:** 
-1. Update the `CONFIG` section with your new values
-2. Save the script
-3. Run the `setupSync` function again to apply changes
-
 ### Q: Can I customize which fields are included in the sync?
 **A:** The script automatically includes all available fields from the ClearFeed API. For custom field selection or data transformation, contact ClearFeed support for assistance.
 
@@ -189,7 +176,7 @@ Controls how much historical data to fetch during the initial sync:
 4. Verify your API token is still valid
 
 ### Q: Can I modify the sync frequency?
-**A:** The script is configured for hourly syncs. For different frequencies, contact ClearFeed support for customization options.
+**A:** The script is configured for hourly syncs. For different frequencies, contact ClearFeed support for customization options - or edit the original app-script code with the new frequency
 
 ## Data Structure
 
