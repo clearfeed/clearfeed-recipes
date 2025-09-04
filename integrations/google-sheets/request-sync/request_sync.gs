@@ -346,14 +346,9 @@ function flattenObject(obj, prefix = '') {
 /**
  * Set up hourly trigger for automatic sync
  */
-function setupHourlyTrigger() {
-  // Delete existing triggers for this function
-  const triggers = ScriptApp.getProjectTriggers();
-  triggers.forEach(trigger => {
-    if (trigger.getHandlerFunction() === 'syncClearfeedRequests') {
-      ScriptApp.deleteTrigger(trigger);
-    }
-  });
+function enableHourlyTrigger() {
+  // Delete existing triggers for this function first
+  disableHourlyTrigger();
   
   // Create new hourly trigger
   ScriptApp.newTrigger('syncClearfeedRequests')
@@ -362,7 +357,40 @@ function setupHourlyTrigger() {
     .inTimezone('America/Los_Angeles') // Pacific timezone
     .create();
   
-  Logger.log("Hourly trigger set up successfully");
+  Logger.log("✅ Hourly automatic sync enabled");
+  SpreadsheetApp.getUi().alert('Success', 'Hourly automatic sync has been enabled. The script will now run every hour.', SpreadsheetApp.getUi().ButtonSet.OK);
+}
+
+/**
+ * Disable hourly trigger for automatic sync
+ */
+function disableHourlyTrigger() {
+  // Delete existing triggers for this function
+  const triggers = ScriptApp.getProjectTriggers();
+  let deletedCount = 0;
+  
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'syncClearfeedRequests') {
+      ScriptApp.deleteTrigger(trigger);
+      deletedCount++;
+    }
+  });
+  
+  if (deletedCount > 0) {
+    Logger.log(`❌ Disabled ${deletedCount} hourly trigger(s)`);
+    SpreadsheetApp.getUi().alert('Success', 'Hourly automatic sync has been disabled.', SpreadsheetApp.getUi().ButtonSet.OK);
+  } else {
+    Logger.log("No hourly triggers found to disable");
+    SpreadsheetApp.getUi().alert('Info', 'No hourly triggers were found. Automatic sync was already disabled.', SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+}
+
+/**
+ * Check if hourly trigger is currently enabled
+ */
+function isHourlyTriggerEnabled() {
+  const triggers = ScriptApp.getProjectTriggers();
+  return triggers.some(trigger => trigger.getHandlerFunction() === 'syncClearfeedRequests');
 }
 
 /**
@@ -380,11 +408,8 @@ function setupSync() {
     // Run initial sync
     syncClearfeedRequests();
     
-    // Set up hourly trigger
-    setupHourlyTrigger();
-    
     Logger.log("Setup completed successfully!");
-    Logger.log("The script will now run every hour to sync new and updated requests.");
+    Logger.log("Use the 'Clearfeed Sync' menu to enable hourly automatic syncing if desired.");
     
     // Create the custom menu immediately
     onOpen();
@@ -456,14 +481,18 @@ function resetSync() {
  */
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
-  ui.createMenu('Clearfeed Sync')
+  const menu = ui.createMenu('Clearfeed Sync')
     .addItem('🔄 Sync Now', 'syncClearfeedRequests')
     .addItem('⚙️ Setup Sync', 'setupSync')
     .addItem('🧪 Test Connection', 'testClearfeedConnection')
     .addSeparator()
+    .addItem('⏰ Enable Hourly Sync', 'enableHourlyTrigger')
+    .addItem('⏹️ Disable Hourly Sync', 'disableHourlyTrigger')
+    .addSeparator()
     .addItem('🔄 Reset Sync', 'resetSync')
-    .addItem('📋 View Logs', 'showLogs')
-    .addToUi();
+    .addItem('📋 View Logs', 'showLogs');
+  
+  menu.addToUi();
 }
 
 /**

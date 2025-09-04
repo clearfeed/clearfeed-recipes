@@ -111,8 +111,8 @@ After the initial sync, the script runs **incremental syncs** every hour:
 - Adds new rows for newly created requests
 - Much faster than re-downloading all data
 
-### Automatic Scheduling
-The script automatically sets up an hourly trigger aligned with Pacific timezone hour boundaries. You don't need to do anything - it will keep your data synchronized automatically.
+### Manual Scheduling
+By default, the script only runs when you manually trigger it. To enable automatic hourly syncing, use the **"⏰ Enable Hourly Sync"** option from the Clearfeed Sync menu after completing the setup.
 
 ## Using the Custom Menu
 
@@ -121,6 +121,8 @@ Once set up, you'll have a **"Clearfeed Sync"** menu in your Google Sheet with t
 - **🔄 Sync Now**: Manually trigger a sync (useful for testing)
 - **⚙️ Setup Sync**: Re-run the initial setup process
 - **🧪 Test Connection**: Verify your API connection is working
+- **⏰ Enable Hourly Sync**: Turn on automatic hourly syncing
+- **⏹️ Disable Hourly Sync**: Turn off automatic hourly syncing
 - **🔄 Reset Sync**: Clear sync history to force a full re-sync
 - **📋 View Logs**: Instructions for viewing detailed logs
 
@@ -160,13 +162,11 @@ Controls how much historical data to fetch during the initial sync:
 ### Q: Can I customize which fields are included in the sync?
 **A:** The script automatically includes all available fields from the ClearFeed API. For custom field selection or data transformation, contact ClearFeed support for assistance.
 
-### Q: How do I stop the automatic syncing?
-**A:**
-1. Go to Apps Script editor
-2. Click on the clock icon (⏰) in the left sidebar to view triggers
-3. Delete the trigger for `syncClearfeedRequests`
+### Q: How do I enable automatic syncing?
+**A:** Use the **"⏰ Enable Hourly Sync"** option from the Clearfeed Sync menu in your Google Sheet. This will set up automatic syncing every hour.
 
-![Triggers page in Apps Script](./assets/app-script-delete-trigger.png)
+### Q: How do I stop the automatic syncing?
+**A:** Use the **"⏹️ Disable Hourly Sync"** option from the Clearfeed Sync menu in your Google Sheet. This will turn off automatic syncing, but you can still sync manually using **"🔄 Sync Now"**.
 
 ### Q: The sync stopped working. How do I troubleshoot?
 **A:**
@@ -176,7 +176,7 @@ Controls how much historical data to fetch during the initial sync:
 4. Verify your API token is still valid
 
 ### Q: Can I modify the sync frequency?
-**A:** The script is configured for hourly syncs. For different frequencies, contact ClearFeed support for customization options - or edit the original app-script code with the new frequency
+**A:** The script is configured for hourly syncs when automatic syncing is enabled. For different frequencies, contact ClearFeed support for customization options - or edit the original app-script code with the new frequency
 
 ## Data Structure
 
@@ -210,7 +210,7 @@ Complex nested data is flattened into separate columns for easy analysis in Goog
 - Use "Test Connection" to verify API access
 
 **Sync stopped working:**
-- Check if the trigger is still active (Apps Script > Triggers)
+- Check if automatic syncing is enabled using the Clearfeed Sync menu
 - Verify your API token hasn't expired
 - Look at the execution logs for error details
 
