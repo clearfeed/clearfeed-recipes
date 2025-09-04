@@ -124,7 +124,7 @@ Once set up, you'll have a **"Clearfeed Sync"** menu in your Google Sheet with t
 - **🔄 Reset Sync**: Clear sync history to force a full re-sync
 - **📋 View Logs**: Instructions for viewing detailed logs
 
-*[Screenshot placeholder: Custom Clearfeed Sync menu expanded]*
+![Custom Clearfeed Sync menu expanded](./assets/sheet-clearfeed-menu.png)
 
 ## Configuration Options Explained
 
