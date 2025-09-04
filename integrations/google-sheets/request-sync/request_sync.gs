@@ -386,6 +386,9 @@ function setupSync() {
     Logger.log("Setup completed successfully!");
     Logger.log("The script will now run every hour to sync new and updated requests.");
     
+    // Create the custom menu immediately
+    onOpen();
+    
   } catch (error) {
     Logger.log(`Setup failed: ${error.toString()}`);
     throw error;
