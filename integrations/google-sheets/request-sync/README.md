@@ -166,7 +166,7 @@ Controls how much historical data to fetch during the initial sync:
 2. Click on the clock icon (⏰) in the left sidebar to view triggers
 3. Delete the trigger for `syncClearfeedRequests`
 
-*[Screenshot placeholder: Triggers page in Apps Script]*
+![Triggers page in Apps Script](./assets/app-script-delete-trigger.png)
 
 ### Q: The sync stopped working. How do I troubleshoot?
 **A:**
