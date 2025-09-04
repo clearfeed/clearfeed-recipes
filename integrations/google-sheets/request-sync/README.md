@@ -68,8 +68,6 @@ const CONFIG = {
 
 5. **INITIAL_DAYS_BACK**: How many days of historical data to fetch during the first sync (default: 14 days)
 
-*[Screenshot placeholder: CONFIG section highlighted in the script]*
-
 ### Step 5: Save and Set Up the Sync
 
 1. After updating the configuration, save the script again
