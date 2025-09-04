@@ -57,3 +57,4 @@ ENV/
 Thumbs.db
 
 *~
+.aider*
