@@ -31,7 +31,7 @@ Before you begin, make sure you have:
 
 1. In the Apps Script editor, you'll see a default `Code.gs` file
 2. Delete all the existing code in the editor
-3. Copy the script code from the `request_sync.gs` file in this folder
+3. Copy the script code from the [`request_sync.gs`](./request_sync.gs) file in this folder
 4. Paste the entire script into the editor
 5. Click the **Save** button (💾) or press `Ctrl+S` (Windows) / `Cmd+S` (Mac)
 
