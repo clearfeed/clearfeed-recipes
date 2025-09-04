@@ -17,8 +17,6 @@ Before you begin, make sure you have:
 2. Click the **"+ Blank"** button to create a new spreadsheet
 3. Give your spreadsheet a meaningful name like "ClearFeed Requests Dashboard"
 
-*[Screenshot placeholder: Creating a new Google Sheet]*
-
 ### Step 2: Open Google Apps Script
 
 1. In your Google Sheet, click on **Extensions** in the menu bar
@@ -244,7 +242,3 @@ For additional features, custom field mapping, advanced filtering, or integratio
 - Data is stored in your Google Sheets and follows Google's security policies
 - Consider using a dedicated Google account for automated processes in enterprise environments
 
----
-
-*Last updated: [Current Date]*
-*Script version: Compatible with ClearFeed API v1*
