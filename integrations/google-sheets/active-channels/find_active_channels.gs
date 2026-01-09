@@ -495,24 +495,10 @@ function sendInactiveChannelsToSlack() {
  * Returns the number of messages sent successfully
  */
 function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
-  const MAX_MESSAGE_LENGTH = 38000; // Slack limit is 40k, using 38k for safety
+  const MAX_MESSAGE_LENGTH = 9000; // Slack limit is 40k, using lower limit for safety
   const activityPeriod = CONFIG.LOOKBACK_DAYS === 1 ? '24 hours' : `last ${CONFIG.LOOKBACK_DAYS} days`;
 
   const collections = Object.keys(groupedByCollection);
-  let messagesSent = 0;
-  let chunkNumber = 1;
-  const totalChunks = Math.ceil(collections.length / 5); // Estimate, will update
-
-  // Build header (same for all chunks)
-  const buildHeader = (chunk, total) => {
-    if (chunk === 1 && total === 1) {
-      return `📢 *ClearFeed Channel Activity Report*\n\nFound *${totalInactive}* inactive channels in the ${activityPeriod}:\n\n`;
-    } else if (chunk === 1) {
-      return `📢 *ClearFeed Channel Activity Report* (${total} parts)\n\nFound *${totalInactive}* inactive channels in the ${activityPeriod}:\n\n`;
-    } else {
-      return `📢 *ClearFeed Channel Activity Report* (part ${chunk}/${total})\n\n`;
-    }
-  };
 
   // Build a single collection section
   const buildCollectionSection = (collection, channels) => {
@@ -528,33 +514,60 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
     return section + '\n';
   };
 
-  // Build and send chunks
-  let currentChunk = buildHeader(chunkNumber, '?');
-  const collectionChunks = []; // Will group collections that fit in one message
+  // First pass: determine how many chunks we need
+  const chunkInfo = [];
+  let currentLength = 0;
+  let currentChunkCollections = [];
+
+  // Base header length estimate
+  const baseHeaderLength = 100; // Rough estimate for header
 
   for (let i = 0; i < collections.length; i++) {
     const collection = collections[i];
     const channels = groupedByCollection[collection];
-    const collectionSection = buildCollectionSection(collection, channels);
+    const section = buildCollectionSection(collection, channels);
 
-    // Check if adding this collection would exceed the limit
-    if (currentChunk.length + collectionSection.length > MAX_MESSAGE_LENGTH) {
-      // Send current chunk
-      if (postSlackWebhookRaw(currentChunk)) {
-        messagesSent++;
-      }
-      chunkNumber++;
-
-      // Start new chunk
-      currentChunk = buildHeader(chunkNumber, '?') + collectionSection;
-    } else {
-      currentChunk += collectionSection;
+    if (currentLength + section.length + baseHeaderLength > MAX_MESSAGE_LENGTH && currentChunkCollections.length > 0) {
+      // Start a new chunk
+      chunkInfo.push([...currentChunkCollections]);
+      currentChunkCollections = [];
+      currentLength = 0;
     }
+
+    currentChunkCollections.push({ collection, channels, section });
+    currentLength += section.length;
   }
 
-  // Send the last chunk
-  if (currentChunk.length > 0) {
-    if (postSlackWebhookRaw(currentChunk)) {
+  // Add the last chunk
+  if (currentChunkCollections.length > 0) {
+    chunkInfo.push(currentChunkCollections);
+  }
+
+  const totalChunks = chunkInfo.length;
+
+  // Second pass: build and send the messages
+  let messagesSent = 0;
+
+  for (let chunkIndex = 0; chunkIndex < chunkInfo.length; chunkIndex++) {
+    const chunkCollections = chunkInfo[chunkIndex];
+    let text = '';
+
+    // Build header
+    if (totalChunks === 1) {
+      text = `📢 *ClearFeed Channel Activity Report*\n\nFound *${totalInactive}* inactive channels in the ${activityPeriod}:\n\n`;
+    } else if (chunkIndex === 0) {
+      text = `📢 *ClearFeed Channel Activity Report* (${totalChunks} parts)\n\nFound *${totalInactive}* inactive channels in the ${activityPeriod}:\n\n`;
+    } else {
+      text = `📢 *ClearFeed Channel Activity Report* (part ${chunkIndex + 1}/${totalChunks})\n\n`;
+    }
+
+    // Add collections for this chunk
+    for (const item of chunkCollections) {
+      text += item.section;
+    }
+
+    // Send this chunk
+    if (postSlackWebhookRaw(text)) {
       messagesSent++;
     }
   }
