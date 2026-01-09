@@ -42,7 +42,9 @@ const CONFIG = {
   SHEET_SUMMARY: "Channel Activity Summary", // Name of the summary sheet tab
   SHEET_REQUESTS: "Requests", // Name of the raw requests sheet tab
   COLLECTIONS_TO_SCAN: [], // List of collection names to scan
-  SPREADSHEET_ID: "" // Leave empty to use current spreadsheet
+  SPREADSHEET_ID: "", // Leave empty to use current spreadsheet
+  SLACK_WEBHOOK_URL: "", // Slack webhook URL for notifications (optional)
+  SLACK_WORKSPACE_DOMAIN: "" // Slack workspace domain for channel links (optional)
 };
 ```
 
@@ -69,6 +71,18 @@ const CONFIG = {
    - Example: `["Enterprise Customers", "Trial Users"]` - Only scan channels from these collections
 
 6. **SPREADSHEET_ID**: Leave empty to use the current spreadsheet
+
+7. **SLACK_WEBHOOK_URL**: Slack webhook URL to send inactive channel notifications
+   - Leave empty if you don't want Slack notifications
+   - To create a webhook: In Slack, go to Apps > Incoming Webhooks > Add to Slack
+   - The webhook will send a formatted message listing all inactive channels grouped by collection
+
+8. **SLACK_WORKSPACE_DOMAIN**: Slack workspace domain for clickable channel links
+   - Leave empty if you don't want channel links
+   - Format: `"your-workspace.slack.com"` (e.g., `"clearfeed.slack.com"`)
+   - When set, channel names in the spreadsheet become clickable hyperlinks
+   - When set, Slack notifications include clickable links to each channel
+   - Channel links format: `https://your-workspace.slack.com/archives/CHANNEL_ID`
 
 ### Step 5: Save and Test the Connection
 
@@ -106,12 +120,13 @@ The summary sheet contains one row per channel with the following columns:
 | Column | Description |
 |--------|-------------|
 | `channel_id` | Internal ClearFeed ID for the channel |
-| `channel_name` | Name of the channel |
+| `channel_name` | Name of the channel (clickable link to Slack if SLACK_WORKSPACE_DOMAIN is configured) |
 | `channel_owner` | Owner of the channel |
 | `collection_name` | Name of the collection this channel belongs to |
 | `collection_id` | Internal ClearFeed ID for the collection |
-| `was_active_last_n_days` | "Yes" if channel had requests in the lookback period, "No" otherwise |
+| `was_active_last_N_days` | "Yes" if channel had requests in the lookback period, "No" otherwise (column name dynamically shows N days from LOOKBACK_DAYS, e.g., `was_active_last_7_days`) |
 | `request_count` | Number of requests created in this channel during the lookback period |
+| `channel_url` | (Optional) Full URL to the Slack channel (only appears if SLACK_WORKSPACE_DOMAIN is configured) |
 
 ### Requests Sheet
 
@@ -123,6 +138,7 @@ Once set up, you'll have a **"ClearFeed Activity"** menu in your Google Sheet wi
 
 - **📊 Fetch ClearFeed Activity**: Manually trigger activity analysis (fetches data for last N days)
 - **🧪 Test Connection**: Verify your API connection is working
+- **📤 Send Inactive Channel List to Slack**: Send a summary of inactive channels to a configured Slack webhook
 - **🗑️ Clear Data**: Clear all activity and request data from the sheets
 - **📋 View Logs**: Instructions for viewing detailed logs
 
@@ -148,7 +164,57 @@ This is useful when you want to focus on important customer segments while exclu
 
 ### 4. Identify Inactive Channels for Cleanup
 
-Sort the summary sheet by `was_active_last_n_days` to quickly identify channels that may need attention or removal.
+Sort the summary sheet by `was_active_last_N_days` to quickly identify channels that may need attention or removal.
+
+### 5. Send Automated Slack Notifications
+
+Configure a Slack webhook to automatically notify your team about inactive channels:
+
+1. Set up an Incoming Webhook in your Slack workspace
+2. Add the webhook URL to `SLACK_WEBHOOK_URL` in the CONFIG
+3. (Optional) Set `SLACK_WORKSPACE_DOMAIN` to include clickable channel links
+4. Run **"Fetch ClearFeed Activity"** to get the latest data
+5. Click **"Send Inactive Channel List to Slack"** to post the report
+
+The Slack message includes:
+- Total count of inactive channels
+- Channels grouped by collection
+- The lookback period used for analysis
+- (Optional) Clickable links to each channel if `SLACK_WORKSPACE_DOMAIN` is configured
+
+Example Slack message format (without workspace domain):
+```
+📢 ClearFeed Channel Activity Report
+
+Found 12 inactive channels in the last 7 days:
+
+Enterprise Customers (5 channels):
+  • #customer-support-legacy
+  • #enterprise-onboarding-old
+  • ...
+
+Trial Users (7 channels):
+  • #trial-feedback-archive
+  • ...
+```
+
+Example Slack message format (with `SLACK_WORKSPACE_DOMAIN: "clearfeed.slack.com"`):
+```
+📢 ClearFeed Channel Activity Report
+
+Found 12 inactive channels in the last 7 days:
+
+Enterprise Customers (5 channels):
+  • <https://clearfeed.slack.com/archives/C02G9410BB3|#customer-support-legacy>
+  • <https://clearfeed.slack.com/archives/C03H1234567|#enterprise-onboarding-old>
+  • ...
+
+Trial Users (7 channels):
+  • <https://clearfeed.slack.com/archives/C04J9876543|#trial-feedback-archive>
+  • ...
+```
+
+**Note:** In the Slack app, channels appear as clickable links with the channel name as the anchor text.
 
 ## Configuration Options Explained
 
@@ -167,6 +233,20 @@ Filter which collections to include in the analysis:
 - **Array of names**: Only include channels from these collections
 - Comparison is case-insensitive
 
+### SLACK_WEBHOOK_URL
+Optional webhook URL for sending inactive channel notifications to Slack:
+- **Leave empty** (`""`): Disable Slack notifications (default)
+- **Set to URL**: Enable notifications when using "Send Inactive Channel List to Slack" menu option
+- Create a webhook in Slack via Apps > Incoming Webhooks
+
+### SLACK_WORKSPACE_DOMAIN
+Optional Slack workspace domain for generating clickable channel links:
+- **Leave empty** (`""`): Channel names appear as plain text (default)
+- **Set to domain**: Channel names become clickable hyperlinks in both spreadsheet and Slack messages
+- Format: `"your-workspace.slack.com"` (e.g., `"acme-corp.slack.com"`)
+- Links format: `https://your-workspace.slack.com/archives/CHANNEL_ID`
+- Find your workspace domain in Slack's URL (e.g., `https://acme-corp.slack.com`)
+
 ## Frequently Asked Questions
 
 ### Q: Can I track different collections separately?
@@ -181,8 +261,12 @@ Filter which collections to include in the analysis:
 - **Monthly**: Set `LOOKBACK_DAYS: 30` and run monthly
 - **Ad-hoc**: Run whenever you need to check channel health
 
-### Q: What does "was_active_last_n_days" mean?
-**A:** A channel is marked as active if at least one request was created in that channel during the lookback period. The request count shows exactly how many requests were created.
+### Q: What does the activity column name mean?
+**A:** The column name dynamically reflects your `LOOKBACK_DAYS` setting. For example:
+- With `LOOKBACK_DAYS: 7`, the column is named `was_active_last_7_days`
+- With `LOOKBACK_DAYS: 30`, the column is named `was_active_last_30_days`
+
+A channel is marked as "Yes" (active) if at least one request was created in that channel during the lookback period, "No" otherwise.
 
 ### Q: Can I customize the lookback period?
 **A:** Yes! Simply change the `LOOKBACK_DAYS` value in the CONFIG section. You can set it to any positive integer (e.g., 14 for two weeks, 60 for two months).
@@ -199,6 +283,23 @@ Filter which collections to include in the analysis:
 1. Click on the clock icon (Triggers) in the left sidebar
 2. Add a new trigger for `fetchClearfeedActivity`
 3. Set your preferred time-based trigger (e.g., daily, weekly)
+
+### Q: How do I set up Slack notifications?
+**A:**
+1. In Slack, go to **Apps** > **Incoming Webhooks** (or use Slack Workflow Builder)
+2. Click **Add to Slack** and select a channel
+3. Copy the webhook URL
+4. Paste it into `SLACK_WEBHOOK_URL` in the CONFIG
+5. (Optional) For clickable channel links, set `SLACK_WORKSPACE_DOMAIN` to your workspace domain (e.g., `"acme-corp.slack.com"`)
+6. Run "Fetch ClearFeed Activity" first, then "Send Inactive Channel List to Slack"
+
+### Q: What does the Slack notification look like?
+**A:** The Slack message shows:
+- A summary header with the total inactive channel count
+- Channels grouped by collection for easy scanning
+- The lookback period (e.g., "last 7 days")
+- A footer reminding users to refresh the data
+- (Optional) Clickable links to each channel if `SLACK_WORKSPACE_DOMAIN` is configured
 
 ## Data Structure
 
@@ -230,6 +331,12 @@ Channel activity is determined by checking if any requests were created in each 
 - Check the `LOOKBACK_DAYS` setting - it might be too short
 - Verify there are actually requests in your ClearFeed workspace
 - Check the Requests sheet to see if any data was fetched
+
+**Slack webhook not sending:**
+- Verify `SLACK_WEBHOOK_URL` is set in the CONFIG
+- Make sure you've run "Fetch ClearFeed Activity" first to populate the summary sheet
+- Check the webhook URL is correct and the channel/destination still exists in Slack
+- View the Apps Script logs for detailed error messages
 
 ## Support and Customization
 

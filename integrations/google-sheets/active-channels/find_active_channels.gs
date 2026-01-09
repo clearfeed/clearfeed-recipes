@@ -6,7 +6,9 @@ const CONFIG = {
   SHEET_SUMMARY: "Channel Activity Summary", // Name of the summary sheet tab
   SHEET_REQUESTS: "Requests", // Name of the raw requests sheet tab
   COLLECTIONS_TO_SCAN: [], // List of collection names to scan. Empty array = all collections
-  SPREADSHEET_ID: "" // Leave empty to use current spreadsheet, or specify ID
+  SPREADSHEET_ID: "", // Leave empty to use current spreadsheet, or specify ID
+  SLACK_WEBHOOK_URL: "", // Slack webhook URL to send inactive channel notifications
+  SLACK_WORKSPACE_DOMAIN: "" // Slack workspace domain (e.g., "clearfeed.slack.com") for channel links
 };
 
 const BASE_URL = "https://api.clearfeed.app/v1/rest";
@@ -51,8 +53,9 @@ function fetchClearfeedActivity() {
     });
 
     // Mark activity status on channels
+    const activityColumn = `was_active_last_${CONFIG.LOOKBACK_DAYS}_days`;
     filteredChannels.forEach(ch => {
-      ch.was_active_last_n_days = activeChannelIds.has(ch.channel_id) ? 'Yes' : 'No';
+      ch[activityColumn] = activeChannelIds.has(ch.channel_id) ? 'Yes' : 'No';
       ch.request_count = countRequestsForChannel(requests, ch.channel_id);
     });
 
@@ -97,20 +100,36 @@ function fetchAllChannels() {
   const collections = data.collections || [];
 
   const channels = [];
+  const activityColumn = `was_active_last_${CONFIG.LOOKBACK_DAYS}_days`;
+
   collections.forEach(col => {
     const colChannels = col.channels || [];
     colChannels.forEach(ch => {
       const name = ch.name && String(ch.name).trim() !== '' ? ch.name : 'N/A';
       const owner = ch.owner && String(ch.owner).trim() !== '' ? ch.owner : 'N/A';
-      channels.push({
+
+      // Build channel URL if workspace domain is configured
+      let channelUrl = '';
+      if (CONFIG.SLACK_WORKSPACE_DOMAIN && CONFIG.SLACK_WORKSPACE_DOMAIN !== '') {
+        channelUrl = `https://${CONFIG.SLACK_WORKSPACE_DOMAIN}/archives/${ch.id}`;
+      }
+
+      const channelObj = {
         channel_id: ch.id,
         channel_name: name,
         channel_owner: owner,
         collection_name: col.name,
         collection_id: col.id,
-        was_active_last_n_days: '', // Will be filled later
         request_count: 0 // Will be filled later
-      });
+      };
+
+      // Only add channel_url if we have a workspace domain
+      if (channelUrl) {
+        channelObj.channel_url = channelUrl;
+      }
+
+      channelObj[activityColumn] = ''; // Will be filled later
+      channels.push(channelObj);
     });
   });
 
@@ -205,7 +224,21 @@ function writeToSheet(sheet, data, sheetType) {
   sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
   sheet.getRange(1, 1, 1, headers.length).setBackground('#f0f0f0');
 
-  const values = data.map(obj => headers.map(h => obj[h] || ''));
+  // Build values array, using HYPERLINK formula for channel_name if channel_url exists
+  const values = data.map(obj => {
+    return headers.map(h => {
+      const value = obj[h] || '';
+
+      // For channel_name with channel_url, create a hyperlink formula
+      if (h === 'channel_name' && obj.channel_url) {
+        return `=HYPERLINK("${obj.channel_url}", "${value}")`;
+      }
+
+      // For channel_url, keep as is (will show the raw URL)
+      return value;
+    });
+  });
+
   sheet.getRange(2, 1, values.length, headers.length).setValues(values);
 
   // Auto-resize columns
@@ -336,6 +369,197 @@ function clearActivityData() {
 
 
 /**
+ * Send inactive channels list to Slack webhook
+ */
+function sendInactiveChannelsToSlack() {
+  try {
+    // Validate webhook URL
+    if (!CONFIG.SLACK_WEBHOOK_URL || CONFIG.SLACK_WEBHOOK_URL === "") {
+      SpreadsheetApp.getUi().alert(
+        'Configuration Required',
+        'Please set SLACK_WEBHOOK_URL in the CONFIG section before sending notifications.',
+        SpreadsheetApp.getUi().ButtonSet.OK
+      );
+      return;
+    }
+
+    Logger.log("Preparing to send inactive channels to Slack...");
+
+    const spreadsheet = getSpreadsheet();
+    const summarySheet = spreadsheet.getSheetByName(CONFIG.SHEET_SUMMARY);
+
+    if (!summarySheet) {
+      SpreadsheetApp.getUi().alert(
+        'No Data Found',
+        'Please run "Fetch ClearFeed Activity" first to generate the channel summary.',
+        SpreadsheetApp.getUi().ButtonSet.OK
+      );
+      return;
+    }
+
+    // Read data from summary sheet
+    const dataRange = summarySheet.getDataRange();
+    const values = dataRange.getValues();
+
+    if (values.length < 2) {
+      SpreadsheetApp.getUi().alert(
+        'No Data Found',
+        'The summary sheet is empty. Please run "Fetch ClearFeed Activity" first.',
+        SpreadsheetApp.getUi().ButtonSet.OK
+      );
+      return;
+    }
+
+    const headers = values[0];
+    const activityColumn = `was_active_last_${CONFIG.LOOKBACK_DAYS}_days`;
+    const activityIndex = headers.indexOf(activityColumn);
+
+    if (activityIndex === -1) {
+      SpreadsheetApp.getUi().alert(
+        'Data Mismatch',
+        `The activity column "${activityColumn}" was not found in the summary sheet. Please fetch fresh data.`,
+        SpreadsheetApp.getUi().ButtonSet.OK
+      );
+      return;
+    }
+
+    // Find inactive channels
+    const inactiveChannels = [];
+    for (let i = 1; i < values.length; i++) {
+      const row = values[i];
+      const activity = String(row[activityIndex] || '').trim().toLowerCase();
+
+      if (activity === 'no') {
+        let channelName = headers.indexOf('channel_name') !== -1 ? row[headers.indexOf('channel_name')] : 'Unknown';
+        const collectionName = headers.indexOf('collection_name') !== -1 ? row[headers.indexOf('collection_name')] : 'Unknown';
+        const channelOwner = headers.indexOf('channel_owner') !== -1 ? row[headers.indexOf('channel_owner')] : 'Unknown';
+        const channelId = headers.indexOf('channel_id') !== -1 ? row[headers.indexOf('channel_id')] : '';
+        const channelUrl = headers.indexOf('channel_url') !== -1 ? row[headers.indexOf('channel_url')] : '';
+
+        // Extract just the channel name from HYPERLINK formula if present
+        if (String(channelName).startsWith('=HYPERLINK(')) {
+          const match = channelName.match(/=HYPERLINK\("([^"]+)",\s*"([^"]+)"\)/);
+          if (match) {
+            channelName = match[2]; // Get the anchor text
+          }
+        }
+
+        inactiveChannels.push({
+          channel_name: String(channelName || ''),
+          collection_name: String(collectionName || ''),
+          channel_owner: String(channelOwner || ''),
+          channel_id: String(channelId || ''),
+          channel_url: String(channelUrl || '')
+        });
+      }
+    }
+
+    if (inactiveChannels.length === 0) {
+      SpreadsheetApp.getUi().alert(
+        'No Inactive Channels',
+        `Great news! All channels have been active in the last ${CONFIG.LOOKBACK_DAYS} days.`,
+        SpreadsheetApp.getUi().ButtonSet.OK
+      );
+      return;
+    }
+
+    // Group by collection
+    const groupedByCollection = {};
+    inactiveChannels.forEach(ch => {
+      const collection = ch.collection_name || 'Unknown';
+      if (!groupedByCollection[collection]) {
+        groupedByCollection[collection] = [];
+      }
+      // Push the full channel object, not just the name
+      groupedByCollection[collection].push(ch);
+    });
+
+    // Build the Slack message
+    const message = buildSlackMessage(inactiveChannels.length, groupedByCollection);
+
+    // Post to Slack
+    const success = postSlackWebhook_(message);
+
+    if (success) {
+      Logger.log(`Successfully sent ${inactiveChannels.length} inactive channels to Slack`);
+      SpreadsheetApp.getUi().alert(
+        'Success',
+        `Successfully sent inactive channel list to Slack!\n\n` +
+        `Total inactive channels: ${inactiveChannels.length}\n` +
+        `Lookback period: Last ${CONFIG.LOOKBACK_DAYS} days`,
+        SpreadsheetApp.getUi().ButtonSet.OK
+      );
+    } else {
+      throw new Error('Failed to send to Slack. Check logs for details.');
+    }
+
+  } catch (error) {
+    Logger.log(`Error sending to Slack: ${error.toString()}`);
+    SpreadsheetApp.getUi().alert(
+      'Error',
+      `Failed to send to Slack: ${error.toString()}`,
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+  }
+}
+
+
+/**
+ * Build Slack message payload for inactive channels
+ */
+function buildSlackMessage(totalInactive, groupedByCollection) {
+  const activityPeriod = CONFIG.LOOKBACK_DAYS === 1 ? '24 hours' : `last ${CONFIG.LOOKBACK_DAYS} days`;
+
+  let text = `📢 *ClearFeed Channel Activity Report*\n`;
+  text += `\nFound *${totalInactive}* inactive channels in the ${activityPeriod}:\n\n`;
+
+  // Group channels by collection
+  for (const [collection, channels] of Object.entries(groupedByCollection)) {
+    text += `*${collection}* (${channels.length} channels):\n`;
+    channels.forEach(ch => {
+      // Use Slack's link format <url|text> if channel_url is available
+      if (ch.channel_url && ch.channel_url !== '') {
+        text += `  • <${ch.channel_url}|${ch.channel_name}>\n`;
+      } else {
+        text += `  • ${ch.channel_name}\n`;
+      }
+    });
+    text += `\n`;
+  }
+
+  text += `_Run "Fetch ClearFeed Activity" to update this data._`;
+
+  return {
+    text: text
+  };
+}
+
+
+/**
+ * Post message to Slack webhook
+ */
+function postSlackWebhook_(message) {
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(message),
+    muteHttpExceptions: true
+  };
+
+  const resp = UrlFetchApp.fetch(CONFIG.SLACK_WEBHOOK_URL, options);
+  const status = resp.getResponseCode();
+
+  if (status < 200 || status >= 300) {
+    Logger.log(`Slack webhook failed: ${status} - ${resp.getContentText()}`);
+    return false;
+  }
+
+  Logger.log('Slack webhook sent successfully');
+  return true;
+}
+
+
+/**
  * Create custom menu in Google Sheet
  */
 function onOpen() {
@@ -343,6 +567,8 @@ function onOpen() {
   const menu = ui.createMenu('ClearFeed Activity')
     .addItem('📊 Fetch ClearFeed Activity', 'fetchClearfeedActivity')
     .addItem('🧪 Test Connection', 'testClearfeedConnection')
+    .addSeparator()
+    .addItem('📤 Send Inactive Channel List to Slack', 'sendInactiveChannelsToSlack')
     .addSeparator()
     .addItem('🗑️ Clear Data', 'clearActivityData')
     .addItem('📋 View Logs', 'showLogs');
