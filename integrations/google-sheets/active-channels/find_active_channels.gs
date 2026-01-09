@@ -495,7 +495,7 @@ function sendInactiveChannelsToSlack() {
  * Returns the number of messages sent successfully
  */
 function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
-  const MAX_MESSAGE_LENGTH = 1200; // Conservative limit - accounting for JSON encoding overhead
+  const MAX_MESSAGE_LENGTH = 1000; // Conservative limit - accounting for JSON encoding overhead
   const activityPeriod = CONFIG.LOOKBACK_DAYS === 1 ? '24 hours' : `last ${CONFIG.LOOKBACK_DAYS} days`;
 
   const collections = Object.keys(groupedByCollection);
@@ -519,36 +519,56 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
     return JSON.stringify({ text: text }).length;
   };
 
-  // First pass: determine how many chunks we need
-  const chunkInfo = [];
-  let currentLength = 0;
-  let currentChunkCollections = [];
-
-  // Base header length estimate (using actual payload size)
-  const baseHeaderLength = getPayloadSize(`📢 *ClearFeed Channel Activity Report* (${Math.ceil(collections.length)} parts)\n\nFound *${totalInactive}* inactive channels in the ${activityPeriod}:\n\n`);
-
-  for (let i = 0; i < collections.length; i++) {
-    const collection = collections[i];
+  // First pass: determine how many chunks we need - split by CHANNEL, not by collection
+  const allChannels = [];
+  for (const collection of collections) {
     const channels = groupedByCollection[collection];
-    const section = buildCollectionSection(collection, channels);
-    const sectionPayloadSize = getPayloadSize(section);
+    channels.forEach(ch => {
+      allChannels.push({ collection, channel: ch });
+    });
+  }
 
-    Logger.log(`Collection "${collection}": ${section.length} chars, ${sectionPayloadSize} bytes in JSON`);
+  Logger.log(`Total channels to send: ${allChannels.length}`);
 
-    if (currentLength + sectionPayloadSize + baseHeaderLength > MAX_MESSAGE_LENGTH && currentChunkCollections.length > 0) {
-      // Start a new chunk
-      chunkInfo.push([...currentChunkCollections]);
-      currentChunkCollections = [];
-      currentLength = 0;
+  // Group channels into chunks by size
+  const chunkInfo = [];
+  let currentChunkChannels = [];
+  let currentLength = 0;
+  const baseHeaderLength = getPayloadSize(`📢 *ClearFeed Channel Activity Report* (part 1/1)\n\n`);
+
+  for (let i = 0; i < allChannels.length; i++) {
+    const item = allChannels[i];
+    const { collection, channel } = item;
+
+    // Build this channel's entry
+    let channelEntry = '';
+    if (CONFIG.SLACK_WORKSPACE_DOMAIN && CONFIG.SLACK_WORKSPACE_DOMAIN !== '' && channel.channel_id) {
+      const channelUrl = `https://${CONFIG.SLACK_WORKSPACE_DOMAIN}/archives/${channel.channel_id}`;
+      channelEntry = `  • ${channel.channel_name} (${channelUrl})\n`;
+    } else {
+      channelEntry = `  • ${channel.channel_name}\n`;
     }
 
-    currentChunkCollections.push({ collection, channels, section });
-    currentLength += sectionPayloadSize;
+    const entryPayloadSize = getPayloadSize(channelEntry);
+
+    Logger.log(`Channel ${i + 1}: ${channel.channel_name} - ${entryPayloadSize} bytes`);
+
+    // Check if adding this channel would exceed the limit
+    if (currentLength + entryPayloadSize + baseHeaderLength > MAX_MESSAGE_LENGTH && currentChunkChannels.length > 0) {
+      // Start a new chunk
+      chunkInfo.push([...currentChunkChannels]);
+      currentChunkChannels = [];
+      currentLength = 0;
+      Logger.log(`Starting new chunk at channel ${i + 1}`);
+    }
+
+    currentChunkChannels.push({ collection, channel, entry: channelEntry });
+    currentLength += entryPayloadSize;
   }
 
   // Add the last chunk
-  if (currentChunkCollections.length > 0) {
-    chunkInfo.push(currentChunkCollections);
+  if (currentChunkChannels.length > 0) {
+    chunkInfo.push(currentChunkChannels);
   }
 
   const totalChunks = chunkInfo.length;
@@ -558,10 +578,10 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
   let messagesSent = 0;
 
   for (let chunkIndex = 0; chunkIndex < chunkInfo.length; chunkIndex++) {
-    const chunkCollections = chunkInfo[chunkIndex];
-    let text = '';
+    const chunkChannels = chunkInfo[chunkIndex];
 
     // Build header
+    let text;
     if (totalChunks === 1) {
       text = `📢 *ClearFeed Channel Activity Report*\n\nFound *${totalInactive}* inactive channels in the ${activityPeriod}:\n\n`;
     } else if (chunkIndex === 0) {
@@ -570,26 +590,33 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
       text = `📢 *ClearFeed Channel Activity Report* (part ${chunkIndex + 1}/${totalChunks})\n\n`;
     }
 
+    // Group channels in this chunk by collection for better display
+    const byCollection = {};
+    for (const item of chunkChannels) {
+      if (!byCollection[item.collection]) {
+        byCollection[item.collection] = [];
+      }
+      byCollection[item.collection].push(item.entry);
+    }
+
     // Add collections for this chunk
-    for (const item of chunkCollections) {
-      text += item.section;
+    for (const [collection, entries] of Object.entries(byCollection)) {
+      text += `*${collection}* (${entries.length} channels):\n`;
+      for (const entry of entries) {
+        text += entry;
+      }
+      text += '\n';
     }
 
     const finalPayload = JSON.stringify({ text: text });
     Logger.log(`Chunk ${chunkIndex + 1}/${totalChunks}: ${text.length} chars text, ${finalPayload.length} bytes payload`);
-    Logger.log(`Payload size vs limit: ${finalPayload.length}/${MAX_MESSAGE_LENGTH}`);
-
-    // Safety check - if still too long, truncate
-    if (finalPayload.length > MAX_MESSAGE_LENGTH) {
-      Logger.log(`WARNING: Chunk ${chunkIndex + 1} is still too long (${finalPayload.length} > ${MAX_MESSAGE_LENGTH}), truncating`);
-      // Truncate to safe size
-      const safeText = text.substring(0, MAX_MESSAGE_LENGTH - 100);
-      text = safeText + '\n\n...(truncated)';
-    }
+    Logger.log(`Channels in this chunk: ${chunkChannels.length}`);
 
     // Send this chunk
     if (postSlackWebhookRaw(text)) {
       messagesSent++;
+    } else {
+      Logger.log(`Failed to send chunk ${chunkIndex + 1}`);
     }
   }
 
