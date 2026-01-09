@@ -495,7 +495,7 @@ function sendInactiveChannelsToSlack() {
  * Returns the number of messages sent successfully
  */
 function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
-  const MAX_MESSAGE_LENGTH = 9000; // Slack limit is 40k, using lower limit for safety
+  const MAX_MESSAGE_LENGTH = 1500; // Slack limit is 40k, using conservative limit
   const activityPeriod = CONFIG.LOOKBACK_DAYS === 1 ? '24 hours' : `last ${CONFIG.LOOKBACK_DAYS} days`;
 
   const collections = Object.keys(groupedByCollection);
@@ -520,12 +520,14 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
   let currentChunkCollections = [];
 
   // Base header length estimate
-  const baseHeaderLength = 100; // Rough estimate for header
+  const baseHeaderLength = 150; // Rough estimate for header
 
   for (let i = 0; i < collections.length; i++) {
     const collection = collections[i];
     const channels = groupedByCollection[collection];
     const section = buildCollectionSection(collection, channels);
+
+    Logger.log(`Collection "${collection}" section length: ${section.length} chars`);
 
     if (currentLength + section.length + baseHeaderLength > MAX_MESSAGE_LENGTH && currentChunkCollections.length > 0) {
       // Start a new chunk
@@ -544,6 +546,7 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
   }
 
   const totalChunks = chunkInfo.length;
+  Logger.log(`Total chunks to send: ${totalChunks}`);
 
   // Second pass: build and send the messages
   let messagesSent = 0;
@@ -566,6 +569,11 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
       text += item.section;
     }
 
+    Logger.log(`Chunk ${chunkIndex + 1}/${totalChunks}: ${text.length} characters`);
+    Logger.log(`--- Chunk ${chunkIndex + 1} content start ---`);
+    Logger.log(text);
+    Logger.log(`--- Chunk ${chunkIndex + 1} content end ---`);
+
     // Send this chunk
     if (postSlackWebhookRaw(text)) {
       messagesSent++;
@@ -581,17 +589,25 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
  */
 function postSlackWebhookRaw(text) {
   const message = { text: text };
+  const payload = JSON.stringify(message);
+
+  Logger.log(`Sending to Slack webhook:`);
+  Logger.log(`Payload length: ${payload.length} characters`);
+  Logger.log(`Payload: ${payload}`);
 
   const options = {
     method: 'post',
     contentType: 'application/json',
-    payload: JSON.stringify(message),
+    payload: payload,
     muteHttpExceptions: true
   };
 
   const resp = UrlFetchApp.fetch(CONFIG.SLACK_WEBHOOK_URL, options);
   const status = resp.getResponseCode();
   const responseText = resp.getContentText();
+
+  Logger.log(`Slack response status: ${status}`);
+  Logger.log(`Slack response body: ${responseText}`);
 
   if (status < 200 || status >= 300) {
     Logger.log(`Slack webhook failed: ${status} - ${responseText}`);
