@@ -495,7 +495,7 @@ function sendInactiveChannelsToSlack() {
  * Returns the number of messages sent successfully
  */
 function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
-  const MAX_MESSAGE_LENGTH = 1500; // Slack limit is 40k, using conservative limit
+  const MAX_MESSAGE_LENGTH = 1200; // Conservative limit - accounting for JSON encoding overhead
   const activityPeriod = CONFIG.LOOKBACK_DAYS === 1 ? '24 hours' : `last ${CONFIG.LOOKBACK_DAYS} days`;
 
   const collections = Object.keys(groupedByCollection);
@@ -514,22 +514,28 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
     return section + '\n';
   };
 
+  // Calculate actual JSON payload size (accounts for escaping)
+  const getPayloadSize = (text) => {
+    return JSON.stringify({ text: text }).length;
+  };
+
   // First pass: determine how many chunks we need
   const chunkInfo = [];
   let currentLength = 0;
   let currentChunkCollections = [];
 
-  // Base header length estimate
-  const baseHeaderLength = 150; // Rough estimate for header
+  // Base header length estimate (using actual payload size)
+  const baseHeaderLength = getPayloadSize(`📢 *ClearFeed Channel Activity Report* (${Math.ceil(collections.length)} parts)\n\nFound *${totalInactive}* inactive channels in the ${activityPeriod}:\n\n`);
 
   for (let i = 0; i < collections.length; i++) {
     const collection = collections[i];
     const channels = groupedByCollection[collection];
     const section = buildCollectionSection(collection, channels);
+    const sectionPayloadSize = getPayloadSize(section);
 
-    Logger.log(`Collection "${collection}" section length: ${section.length} chars`);
+    Logger.log(`Collection "${collection}": ${section.length} chars, ${sectionPayloadSize} bytes in JSON`);
 
-    if (currentLength + section.length + baseHeaderLength > MAX_MESSAGE_LENGTH && currentChunkCollections.length > 0) {
+    if (currentLength + sectionPayloadSize + baseHeaderLength > MAX_MESSAGE_LENGTH && currentChunkCollections.length > 0) {
       // Start a new chunk
       chunkInfo.push([...currentChunkCollections]);
       currentChunkCollections = [];
@@ -537,7 +543,7 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
     }
 
     currentChunkCollections.push({ collection, channels, section });
-    currentLength += section.length;
+    currentLength += sectionPayloadSize;
   }
 
   // Add the last chunk
@@ -569,10 +575,17 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
       text += item.section;
     }
 
-    Logger.log(`Chunk ${chunkIndex + 1}/${totalChunks}: ${text.length} characters`);
-    Logger.log(`--- Chunk ${chunkIndex + 1} content start ---`);
-    Logger.log(text);
-    Logger.log(`--- Chunk ${chunkIndex + 1} content end ---`);
+    const finalPayload = JSON.stringify({ text: text });
+    Logger.log(`Chunk ${chunkIndex + 1}/${totalChunks}: ${text.length} chars text, ${finalPayload.length} bytes payload`);
+    Logger.log(`Payload size vs limit: ${finalPayload.length}/${MAX_MESSAGE_LENGTH}`);
+
+    // Safety check - if still too long, truncate
+    if (finalPayload.length > MAX_MESSAGE_LENGTH) {
+      Logger.log(`WARNING: Chunk ${chunkIndex + 1} is still too long (${finalPayload.length} > ${MAX_MESSAGE_LENGTH}), truncating`);
+      // Truncate to safe size
+      const safeText = text.substring(0, MAX_MESSAGE_LENGTH - 100);
+      text = safeText + '\n\n...(truncated)';
+    }
 
     // Send this chunk
     if (postSlackWebhookRaw(text)) {
