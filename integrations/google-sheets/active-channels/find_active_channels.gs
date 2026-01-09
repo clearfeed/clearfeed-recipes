@@ -495,24 +495,11 @@ function sendInactiveChannelsToSlack() {
  * Returns the number of messages sent successfully
  */
 function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
-  const MAX_MESSAGE_LENGTH = 1000; // Conservative limit - accounting for JSON encoding overhead
+  const MAX_MESSAGE_LENGTH = 4000; // Maximum payload size
+  const SLEEP_SECONDS = 3; // Delay between posts
   const activityPeriod = CONFIG.LOOKBACK_DAYS === 1 ? '24 hours' : `last ${CONFIG.LOOKBACK_DAYS} days`;
 
   const collections = Object.keys(groupedByCollection);
-
-  // Build a single collection section
-  const buildCollectionSection = (collection, channels) => {
-    let section = `*${collection}* (${channels.length} channels):\n`;
-    channels.forEach(ch => {
-      if (CONFIG.SLACK_WORKSPACE_DOMAIN && CONFIG.SLACK_WORKSPACE_DOMAIN !== '' && ch.channel_id) {
-        const channelUrl = `https://${CONFIG.SLACK_WORKSPACE_DOMAIN}/archives/${ch.channel_id}`;
-        section += `  • <${channelUrl}|${ch.channel_name}>\n`;
-      } else {
-        section += `  • ${ch.channel_name}\n`;
-      }
-    });
-    return section + '\n';
-  };
 
   // Calculate actual JSON payload size (accounts for escaping)
   const getPayloadSize = (text) => {
@@ -572,11 +559,14 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
   }
 
   const totalChunks = chunkInfo.length;
+  const estimatedTimeSeconds = totalChunks * SLEEP_SECONDS;
+  const estimatedTimeMinutes = Math.ceil(estimatedTimeSeconds / 60);
+
   Logger.log(`Total chunks to send: ${totalChunks}`);
+  Logger.log(`Estimated time: ${estimatedTimeSeconds} seconds (${estimatedTimeMinutes} minutes)`);
 
-  // Second pass: build and send the messages
-  let messagesSent = 0;
-
+  // Second pass: build all messages in memory first
+  const preparedMessages = [];
   for (let chunkIndex = 0; chunkIndex < chunkInfo.length; chunkIndex++) {
     const chunkChannels = chunkInfo[chunkIndex];
 
@@ -608,13 +598,36 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
       text += '\n';
     }
 
+    preparedMessages.push(text);
+  }
+
+  // Show initial alert to user with estimated time
+  SpreadsheetApp.getUi().alert(
+    'Sending to Slack',
+    `Sending ${totalChunks} message(s) to Slack...\n\n` +
+    `This will take approximately ${estimatedTimeSeconds} seconds (${estimatedTimeMinutes} minute(s)).\n\n` +
+    `Please wait while messages are being sent.`,
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+
+  // Now send all messages with delays
+  let messagesSent = 0;
+  for (let chunkIndex = 0; chunkIndex < preparedMessages.length; chunkIndex++) {
+    const text = preparedMessages[chunkIndex];
     const finalPayload = JSON.stringify({ text: text });
-    Logger.log(`Chunk ${chunkIndex + 1}/${totalChunks}: ${text.length} chars text, ${finalPayload.length} bytes payload`);
-    Logger.log(`Channels in this chunk: ${chunkChannels.length}`);
+
+    Logger.log(`Sending chunk ${chunkIndex + 1}/${totalChunks}: ${finalPayload.length} bytes payload`);
 
     // Send this chunk
     if (postSlackWebhookRaw(text)) {
       messagesSent++;
+      Logger.log(`Successfully sent chunk ${chunkIndex + 1}/${totalChunks}`);
+
+      // Update user on progress (skip alert for last chunk since we'll show final result)
+      if (chunkIndex < preparedMessages.length - 1) {
+        // Sleep between messages
+        Utilities.sleep(SLEEP_SECONDS * 1000);
+      }
     } else {
       Logger.log(`Failed to send chunk ${chunkIndex + 1}`);
     }
