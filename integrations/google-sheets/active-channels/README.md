@@ -23,6 +23,8 @@ Before you begin, make sure you have:
 2. Select **Apps Script** from the dropdown menu
 3. This will open the Google Apps Script editor in a new tab
 
+![Accessing Apps Script from Extensions menu](../request-sync/assets/app-script-in-extension.png)
+
 ### Step 3: Add the ClearFeed Activity Script
 
 1. In the Apps Script editor, you'll see a default `Code.gs` file
@@ -30,6 +32,8 @@ Before you begin, make sure you have:
 3. Copy the script code from the [`find_active_channels.gs`](./find_active_channels.gs) file in this folder
 4. Paste the entire script into the editor
 5. Click the **Save** button (💾) or press `Ctrl+S` (Windows) / `Cmd+S` (Mac)
+
+![Apps Script editor with code pasted](../request-sync/assets/app-script-code-gs-example.png)
 
 ### Step 4: Configure the Script
 
@@ -110,6 +114,8 @@ When you run the script for the first time, Google will ask for permissions:
    - Create a summary showing which channels had activity
    - Store raw request data in a separate sheet
 3. You'll see a success message with the activity statistics
+
+![ClearFeed Activity menu](./assets/activity.png)
 
 ## Understanding the Output
 
