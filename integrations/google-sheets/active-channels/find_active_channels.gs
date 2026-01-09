@@ -531,7 +531,7 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
     let channelEntry = '';
     if (CONFIG.SLACK_WORKSPACE_DOMAIN && CONFIG.SLACK_WORKSPACE_DOMAIN !== '' && channel.channel_id) {
       const channelUrl = `https://${CONFIG.SLACK_WORKSPACE_DOMAIN}/archives/${channel.channel_id}`;
-      channelEntry = `  • ${channel.channel_name} (${channelUrl})\n`;
+      channelEntry = `  • ${channel.channel_name} ( ${channelUrl} )\n`;
     } else {
       channelEntry = `  • ${channel.channel_name}\n`;
     }
