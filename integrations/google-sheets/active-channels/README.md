@@ -74,7 +74,7 @@ const CONFIG = {
 
 7. **SLACK_WEBHOOK_URL**: Slack webhook URL to send inactive channel notifications
    - Leave empty if you don't want Slack notifications
-   - To create a webhook: In Slack, go to Apps > Incoming Webhooks > Add to Slack
+   - To create a webhook: In Slack, open **Workflow Builder**, create a workflow with a **Webhook** trigger, add a **Send message** step with `{{text}}`, and copy the webhook URL
    - The webhook will send a formatted message listing all inactive channels grouped by collection
 
 8. **SLACK_WORKSPACE_DOMAIN**: Slack workspace domain for clickable channel links
@@ -168,17 +168,21 @@ Sort the summary sheet by `was_active_last_N_days` to quickly identify channels 
 
 Configure a Slack webhook to automatically notify your team about inactive channels:
 
-1. Set up an Incoming Webhook in your Slack workspace
-2. Add the webhook URL to `SLACK_WEBHOOK_URL` in the CONFIG
-3. (Optional) Set `SLACK_WORKSPACE_DOMAIN` to include clickable channel links
-4. Run **"Fetch ClearFeed Activity"** to get the latest data
-5. Click **"Send Inactive Channel List to Slack"** to post the report
+1. In Slack, open **Workflow Builder** and create a new workflow
+2. Add a **Webhook** trigger (this gives you a webhook URL)
+3. Add a **Send message** step to post to a channel
+4. In the message box, enter: `{{text}}`
+5. Copy the webhook URL from the trigger
+6. Add the webhook URL to `SLACK_WEBHOOK_URL` in the CONFIG
+7. (Optional) Set `SLACK_WORKSPACE_DOMAIN` to include channel links
+8. Run **"Fetch ClearFeed Activity"** to get the latest data
+9. Click **"Send Inactive Channel List to Slack"** to post the report
 
 The Slack message includes:
 - Total count of inactive channels
 - Channels grouped by collection
 - The lookback period used for analysis
-- (Optional) Clickable links to each channel if `SLACK_WORKSPACE_DOMAIN` is configured
+- (Optional) Channel links if `SLACK_WORKSPACE_DOMAIN` is configured
 
 Example Slack message format (without workspace domain):
 ```
@@ -203,16 +207,84 @@ Example Slack message format (with `SLACK_WORKSPACE_DOMAIN: "clearfeed.slack.com
 Found 12 inactive channels in the last 7 days:
 
 Enterprise Customers (5 channels):
-  • <https://clearfeed.slack.com/archives/C02G9410BB3|#customer-support-legacy>
-  • <https://clearfeed.slack.com/archives/C03H1234567|#enterprise-onboarding-old>
+  • clearfeed-customer-support-legacy (https://clearfeed.slack.com/archives/C02G9410BB3)
+  • clearfeed-enterprise-onboarding-old (https://clearfeed.slack.com/archives/C03H1234567)
   • ...
 
 Trial Users (7 channels):
-  • <https://clearfeed.slack.com/archives/C04J9876543|#trial-feedback-archive>
+  • clearfeed-trial-feedback-archive (https://clearfeed.slack.com/archives/C04J9876543)
   • ...
 ```
 
-**Note:** In the Slack app, channels appear as clickable links with the channel name as the anchor text.
+## Setting Up Automatic Refresh
+
+You can automate the script to refresh your channel activity data on a schedule using Google Apps Script Triggers. This ensures your data stays up-to-date without manual intervention.
+
+### How to Add a Time-Based Trigger
+
+1. **Open the Apps Script Editor:**
+   - In your Google Sheet, go to **Extensions** > **Apps Script**
+   - The script editor will open in a new tab
+
+2. **Open the Triggers Panel:**
+   - Click on the **clock icon** (⏰) in the left sidebar
+   - This opens the "Triggers" panel
+
+3. **Create a New Trigger:**
+   - Click the **+ Add Trigger** button (blue button in the bottom right)
+   - Configure the trigger with these settings:
+     - **Choose which function to run:** `fetchClearfeedActivity`
+     - **Select event source:** `Time-driven`
+     - **Select type of time based trigger:** Choose your preference:
+       - `Day timer` - Runs at a specific time daily
+       - `Week timer` - Runs on specific days of the week
+       - `Month timer` - Runs on specific days of the month
+     - **Select time of day:** Choose when the trigger should run
+     - **Error notification settings:** Choose how to be notified of failures (recommended: "Notify me immediately")
+
+4. **Save the Trigger:**
+   - Click **Save**
+   - You may need to grant additional permissions for the trigger to run
+
+### Recommended Trigger Configurations
+
+**Daily refresh (recommended):**
+- Type: `Day timer`
+- Time: `6am to 7am` (or your preferred time)
+- This ensures you start each day with fresh data
+
+**Weekly refresh:**
+- Type: `Week timer`
+- Day of week: `Monday`
+- Time: `6am to 7am`
+
+**Monthly refresh:**
+- Type: `Month timer`
+- Day of month: `1` (first day of each month)
+- Time: `6am to 7am`
+
+### How Automatic Refresh Works
+
+When the trigger runs, the `fetchClearfeedActivity` function:
+1. **Automatically clears** all old data from both sheets
+2. Fetches fresh data from ClearFeed API
+3. Updates the summary and requests sheets with new data
+4. Runs silently in the background (no alerts shown)
+
+**Note:** The `fetchClearfeedActivity` function clears the sheets automatically before fetching new data - you don't need to manually clear data first.
+
+### Automating Slack Notifications
+
+To automatically send inactive channel reports to Slack on a schedule, create an additional trigger:
+
+1. Follow the same steps to create a new trigger
+2. **Choose which function to run:** `sendInactiveChannelsToSlack`
+3. Set your preferred schedule (daily, weekly, etc.)
+4. **Important:** Make sure the automatic refresh trigger runs **before** the Slack notification trigger so the notification has fresh data
+
+Example schedule:
+- Refresh trigger: `Day timer` at `6am`
+- Slack notification trigger: `Day timer` at `9am`
 
 ## Configuration Options Explained
 
@@ -235,7 +307,12 @@ Filter which collections to include in the analysis:
 Optional webhook URL for sending inactive channel notifications to Slack:
 - **Leave empty** (`""`): Disable Slack notifications (default)
 - **Set to URL**: Enable notifications when using "Send Inactive Channel List to Slack" menu option
-- Create a webhook in Slack via Apps > Incoming Webhooks
+- Create a webhook using Slack **Workflow Builder** (not Incoming Webhooks):
+  1. In Slack, open Workflow Builder
+  2. Create a new workflow
+  3. Add a "Webhook" trigger and copy the webhook URL
+  4. Add a "Send message" step to post to a channel
+  5. In the message box, enter: `{{text}}`
 
 ### SLACK_WORKSPACE_DOMAIN
 Optional Slack workspace domain for generating clickable channel links:
@@ -277,19 +354,18 @@ A channel is marked as "Yes" (active) if at least one request was created in tha
 4. Make sure collection names in `COLLECTIONS_TO_SCAN` match exactly (case-insensitive)
 
 ### Q: Can I automate this to run on a schedule?
-**A:** Yes! In the Apps Script editor:
-1. Click on the clock icon (Triggers) in the left sidebar
-2. Add a new trigger for `fetchClearfeedActivity`
-3. Set your preferred time-based trigger (e.g., daily, weekly)
+**A:** Yes! See the **"Setting Up Automatic Refresh"** section below for detailed instructions on configuring time-based triggers.
 
 ### Q: How do I set up Slack notifications?
 **A:**
-1. In Slack, go to **Apps** > **Incoming Webhooks** (or use Slack Workflow Builder)
-2. Click **Add to Slack** and select a channel
-3. Copy the webhook URL
-4. Paste it into `SLACK_WEBHOOK_URL` in the CONFIG
-5. (Optional) For clickable channel links, set `SLACK_WORKSPACE_DOMAIN` to your workspace domain (e.g., `"acme-corp.slack.com"`)
-6. Run "Fetch ClearFeed Activity" first, then "Send Inactive Channel List to Slack"
+1. In Slack, open **Workflow Builder** and create a new workflow
+2. Add a **Webhook** trigger (this gives you a webhook URL)
+3. Add a **Send message** step to post to a channel
+4. In the message box, enter: `{{text}}`
+5. Copy the webhook URL from the trigger
+6. Paste it into `SLACK_WEBHOOK_URL` in the CONFIG
+7. (Optional) For channel links, set `SLACK_WORKSPACE_DOMAIN` to your workspace domain
+8. Run "Fetch ClearFeed Activity" first, then "Send Inactive Channel List to Slack"
 
 ### Q: What does the Slack notification look like?
 **A:** The Slack message shows:
