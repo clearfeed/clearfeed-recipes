@@ -121,12 +121,10 @@ The summary sheet contains one row per channel with the following columns:
 |--------|-------------|
 | `channel_id` | Internal ClearFeed ID for the channel |
 | `channel_name` | Name of the channel (clickable link to Slack if SLACK_WORKSPACE_DOMAIN is configured) |
-| `channel_owner` | Owner of the channel |
 | `collection_name` | Name of the collection this channel belongs to |
 | `collection_id` | Internal ClearFeed ID for the collection |
 | `was_active_last_N_days` | "Yes" if channel had requests in the lookback period, "No" otherwise (column name dynamically shows N days from LOOKBACK_DAYS, e.g., `was_active_last_7_days`) |
 | `request_count` | Number of requests created in this channel during the lookback period |
-| `channel_url` | (Optional) Full URL to the Slack channel (only appears if SLACK_WORKSPACE_DOMAIN is configured) |
 
 ### Requests Sheet
 

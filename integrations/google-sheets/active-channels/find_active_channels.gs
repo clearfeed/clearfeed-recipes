@@ -106,26 +106,18 @@ function fetchAllChannels() {
     const colChannels = col.channels || [];
     colChannels.forEach(ch => {
       const name = ch.name && String(ch.name).trim() !== '' ? ch.name : 'N/A';
-      const owner = ch.owner && String(ch.owner).trim() !== '' ? ch.owner : 'N/A';
-
-      // Build channel URL if workspace domain is configured
-      let channelUrl = '';
-      if (CONFIG.SLACK_WORKSPACE_DOMAIN && CONFIG.SLACK_WORKSPACE_DOMAIN !== '') {
-        channelUrl = `https://${CONFIG.SLACK_WORKSPACE_DOMAIN}/archives/${ch.id}`;
-      }
 
       const channelObj = {
         channel_id: ch.id,
         channel_name: name,
-        channel_owner: owner,
         collection_name: col.name,
         collection_id: col.id,
         request_count: 0 // Will be filled later
       };
 
-      // Only add channel_url if we have a workspace domain
-      if (channelUrl) {
-        channelObj.channel_url = channelUrl;
+      // Build channel URL if workspace domain is configured (stored as hidden property for hyperlink use)
+      if (CONFIG.SLACK_WORKSPACE_DOMAIN && CONFIG.SLACK_WORKSPACE_DOMAIN !== '') {
+        channelObj._channel_url = `https://${CONFIG.SLACK_WORKSPACE_DOMAIN}/archives/${ch.id}`;
       }
 
       channelObj[activityColumn] = ''; // Will be filled later
@@ -219,22 +211,22 @@ function writeToSheet(sheet, data, sheetType) {
     return;
   }
 
-  const headers = Object.keys(data[0]);
+  // Get headers, filtering out internal properties (starting with _)
+  const headers = Object.keys(data[0]).filter(key => !key.startsWith('_'));
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
   sheet.getRange(1, 1, 1, headers.length).setBackground('#f0f0f0');
 
-  // Build values array, using HYPERLINK formula for channel_name if channel_url exists
+  // Build values array, using HYPERLINK formula for channel_name if _channel_url exists
   const values = data.map(obj => {
     return headers.map(h => {
       const value = obj[h] || '';
 
-      // For channel_name with channel_url, create a hyperlink formula
-      if (h === 'channel_name' && obj.channel_url) {
-        return `=HYPERLINK("${obj.channel_url}", "${value}")`;
+      // For channel_name with _channel_url, create a hyperlink formula
+      if (h === 'channel_name' && obj._channel_url) {
+        return `=HYPERLINK("${obj._channel_url}", "${value}")`;
       }
 
-      // For channel_url, keep as is (will show the raw URL)
       return value;
     });
   });
@@ -432,9 +424,7 @@ function sendInactiveChannelsToSlack() {
       if (activity === 'no') {
         let channelName = headers.indexOf('channel_name') !== -1 ? row[headers.indexOf('channel_name')] : 'Unknown';
         const collectionName = headers.indexOf('collection_name') !== -1 ? row[headers.indexOf('collection_name')] : 'Unknown';
-        const channelOwner = headers.indexOf('channel_owner') !== -1 ? row[headers.indexOf('channel_owner')] : 'Unknown';
         const channelId = headers.indexOf('channel_id') !== -1 ? row[headers.indexOf('channel_id')] : '';
-        const channelUrl = headers.indexOf('channel_url') !== -1 ? row[headers.indexOf('channel_url')] : '';
 
         // Extract just the channel name from HYPERLINK formula if present
         if (String(channelName).startsWith('=HYPERLINK(')) {
@@ -447,9 +437,7 @@ function sendInactiveChannelsToSlack() {
         inactiveChannels.push({
           channel_name: String(channelName || ''),
           collection_name: String(collectionName || ''),
-          channel_owner: String(channelOwner || ''),
-          channel_id: String(channelId || ''),
-          channel_url: String(channelUrl || '')
+          channel_id: String(channelId || '')
         });
       }
     }
@@ -474,18 +462,16 @@ function sendInactiveChannelsToSlack() {
       groupedByCollection[collection].push(ch);
     });
 
-    // Build the Slack message
-    const message = buildSlackMessage(inactiveChannels.length, groupedByCollection);
+    // Build and send Slack messages (handles chunking if too long)
+    const messagesSent = buildAndSendSlackMessages(inactiveChannels.length, groupedByCollection);
 
-    // Post to Slack
-    const success = postSlackWebhook_(message);
-
-    if (success) {
-      Logger.log(`Successfully sent ${inactiveChannels.length} inactive channels to Slack`);
+    if (messagesSent > 0) {
+      Logger.log(`Successfully sent ${messagesSent} message(s) with ${inactiveChannels.length} inactive channels to Slack`);
       SpreadsheetApp.getUi().alert(
         'Success',
         `Successfully sent inactive channel list to Slack!\n\n` +
         `Total inactive channels: ${inactiveChannels.length}\n` +
+        `Messages sent: ${messagesSent}\n` +
         `Lookback period: Last ${CONFIG.LOOKBACK_DAYS} days`,
         SpreadsheetApp.getUi().ButtonSet.OK
       );
@@ -505,40 +491,84 @@ function sendInactiveChannelsToSlack() {
 
 
 /**
- * Build Slack message payload for inactive channels
+ * Build and send Slack messages with chunking support
+ * Returns the number of messages sent successfully
  */
-function buildSlackMessage(totalInactive, groupedByCollection) {
+function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
+  const MAX_MESSAGE_LENGTH = 38000; // Slack limit is 40k, using 38k for safety
   const activityPeriod = CONFIG.LOOKBACK_DAYS === 1 ? '24 hours' : `last ${CONFIG.LOOKBACK_DAYS} days`;
 
-  let text = `📢 *ClearFeed Channel Activity Report*\n`;
-  text += `\nFound *${totalInactive}* inactive channels in the ${activityPeriod}:\n\n`;
+  const collections = Object.keys(groupedByCollection);
+  let messagesSent = 0;
+  let chunkNumber = 1;
+  const totalChunks = Math.ceil(collections.length / 5); // Estimate, will update
 
-  // Group channels by collection
-  for (const [collection, channels] of Object.entries(groupedByCollection)) {
-    text += `*${collection}* (${channels.length} channels):\n`;
+  // Build header (same for all chunks)
+  const buildHeader = (chunk, total) => {
+    if (chunk === 1 && total === 1) {
+      return `📢 *ClearFeed Channel Activity Report*\n\nFound *${totalInactive}* inactive channels in the ${activityPeriod}:\n\n`;
+    } else if (chunk === 1) {
+      return `📢 *ClearFeed Channel Activity Report* (${total} parts)\n\nFound *${totalInactive}* inactive channels in the ${activityPeriod}:\n\n`;
+    } else {
+      return `📢 *ClearFeed Channel Activity Report* (part ${chunk}/${total})\n\n`;
+    }
+  };
+
+  // Build a single collection section
+  const buildCollectionSection = (collection, channels) => {
+    let section = `*${collection}* (${channels.length} channels):\n`;
     channels.forEach(ch => {
-      // Use Slack's link format <url|text> if channel_url is available
-      if (ch.channel_url && ch.channel_url !== '') {
-        text += `  • <${ch.channel_url}|${ch.channel_name}>\n`;
+      if (CONFIG.SLACK_WORKSPACE_DOMAIN && CONFIG.SLACK_WORKSPACE_DOMAIN !== '' && ch.channel_id) {
+        const channelUrl = `https://${CONFIG.SLACK_WORKSPACE_DOMAIN}/archives/${ch.channel_id}`;
+        section += `  • <${channelUrl}|${ch.channel_name}>\n`;
       } else {
-        text += `  • ${ch.channel_name}\n`;
+        section += `  • ${ch.channel_name}\n`;
       }
     });
-    text += `\n`;
+    return section + '\n';
+  };
+
+  // Build and send chunks
+  let currentChunk = buildHeader(chunkNumber, '?');
+  const collectionChunks = []; // Will group collections that fit in one message
+
+  for (let i = 0; i < collections.length; i++) {
+    const collection = collections[i];
+    const channels = groupedByCollection[collection];
+    const collectionSection = buildCollectionSection(collection, channels);
+
+    // Check if adding this collection would exceed the limit
+    if (currentChunk.length + collectionSection.length > MAX_MESSAGE_LENGTH) {
+      // Send current chunk
+      if (postSlackWebhookRaw(currentChunk)) {
+        messagesSent++;
+      }
+      chunkNumber++;
+
+      // Start new chunk
+      currentChunk = buildHeader(chunkNumber, '?') + collectionSection;
+    } else {
+      currentChunk += collectionSection;
+    }
   }
 
-  text += `_Run "Fetch ClearFeed Activity" to update this data._`;
+  // Send the last chunk
+  if (currentChunk.length > 0) {
+    if (postSlackWebhookRaw(currentChunk)) {
+      messagesSent++;
+    }
+  }
 
-  return {
-    text: text
-  };
+  return messagesSent;
 }
 
 
 /**
- * Post message to Slack webhook
+ * Post raw text to Slack webhook
  */
-function postSlackWebhook_(message) {
+function postSlackWebhookRaw(text) {
+  const message = { text: text };
+
   const options = {
     method: 'post',
     contentType: 'application/json',
@@ -548,9 +578,10 @@ function postSlackWebhook_(message) {
 
   const resp = UrlFetchApp.fetch(CONFIG.SLACK_WEBHOOK_URL, options);
   const status = resp.getResponseCode();
+  const responseText = resp.getContentText();
 
   if (status < 200 || status >= 300) {
-    Logger.log(`Slack webhook failed: ${status} - ${resp.getContentText()}`);
+    Logger.log(`Slack webhook failed: ${status} - ${responseText}`);
     return false;
   }
 
