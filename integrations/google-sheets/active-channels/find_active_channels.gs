@@ -15,6 +15,20 @@ const BASE_URL = "https://api.clearfeed.app/v1/rest";
 
 
 /**
+ * Helper function to safely show alerts
+ * UI is not available when running from time-based triggers
+ */
+function safeAlert(title, message) {
+  try {
+    SpreadsheetApp.getUi().alert(title, message, SpreadsheetApp.getUi().ButtonSet.OK);
+  } catch (e) {
+    // UI not available (running from trigger), log instead
+    Logger.log(`[ALERT] ${title}: ${message}`);
+  }
+}
+
+
+/**
  * Main function to fetch and analyze channel activity
  * Fetches channels and requests from ClearFeed, then creates a summary
  */
@@ -64,18 +78,17 @@ function fetchClearfeedActivity() {
     writeToSheet(requestsSheet, requests, "Requests");
 
     Logger.log("Activity analysis completed successfully");
-    SpreadsheetApp.getUi().alert(
+    safeAlert(
       'Success',
       `Channel activity analysis complete!\n\n` +
       `Total channels analyzed: ${filteredChannels.length}\n` +
       `Active channels (last ${CONFIG.LOOKBACK_DAYS} days): ${activeChannelIds.size}\n` +
-      `Inactive channels: ${filteredChannels.length - activeChannelIds.size}`,
-      SpreadsheetApp.getUi().ButtonSet.OK
+      `Inactive channels: ${filteredChannels.length - activeChannelIds.size}`
     );
 
   } catch (error) {
     Logger.log(`Error during activity analysis: ${error.toString()}`);
-    SpreadsheetApp.getUi().alert('Error', `Failed to fetch activity: ${error.toString()}`, SpreadsheetApp.getUi().ButtonSet.OK);
+    safeAlert('Error', `Failed to fetch activity: ${error.toString()}`);
     throw error;
   }
 }
@@ -307,28 +320,25 @@ function testClearfeedConnection() {
       Logger.log("✅ API connection successful");
       Logger.log(`Found ${collectionCount} collections with ${totalChannels} channels`);
 
-      SpreadsheetApp.getUi().alert(
+      safeAlert(
         'Connection Test Successful',
         `Successfully connected to ClearFeed API!\n\n` +
         `Collections: ${collectionCount}\n` +
-        `Total Channels: ${totalChannels}`,
-        SpreadsheetApp.getUi().ButtonSet.OK
+        `Total Channels: ${totalChannels}`
       );
     } else {
       Logger.log(`❌ API connection failed: ${response.getResponseCode()}`);
-      SpreadsheetApp.getUi().alert(
+      safeAlert(
         'Connection Test Failed',
-        `Failed to connect: ${response.getResponseCode()}\n${response.getContentText()}`,
-        SpreadsheetApp.getUi().ButtonSet.OK
+        `Failed to connect: ${response.getResponseCode()}\n${response.getContentText()}`
       );
     }
 
   } catch (error) {
     Logger.log(`❌ Connection test failed: ${error.toString()}`);
-    SpreadsheetApp.getUi().alert(
+    safeAlert(
       'Connection Test Failed',
-      `Error: ${error.toString()}`,
-      SpreadsheetApp.getUi().ButtonSet.OK
+      `Error: ${error.toString()}`
     );
   }
 }
@@ -352,10 +362,9 @@ function clearActivityData() {
     Logger.log(`Cleared ${CONFIG.SHEET_REQUESTS} sheet`);
   }
 
-  SpreadsheetApp.getUi().alert(
+  safeAlert(
     'Success',
-    'Activity data has been cleared.',
-    SpreadsheetApp.getUi().ButtonSet.OK
+    'Activity data has been cleared.'
   );
 }
 
@@ -367,10 +376,9 @@ function sendInactiveChannelsToSlack() {
   try {
     // Validate webhook URL
     if (!CONFIG.SLACK_WEBHOOK_URL || CONFIG.SLACK_WEBHOOK_URL === "") {
-      SpreadsheetApp.getUi().alert(
+      safeAlert(
         'Configuration Required',
-        'Please set SLACK_WEBHOOK_URL in the CONFIG section before sending notifications.',
-        SpreadsheetApp.getUi().ButtonSet.OK
+        'Please set SLACK_WEBHOOK_URL in the CONFIG section before sending notifications.'
       );
       return;
     }
@@ -381,10 +389,9 @@ function sendInactiveChannelsToSlack() {
     const summarySheet = spreadsheet.getSheetByName(CONFIG.SHEET_SUMMARY);
 
     if (!summarySheet) {
-      SpreadsheetApp.getUi().alert(
+      safeAlert(
         'No Data Found',
-        'Please run "Fetch ClearFeed Activity" first to generate the channel summary.',
-        SpreadsheetApp.getUi().ButtonSet.OK
+        'Please run "Fetch ClearFeed Activity" first to generate the channel summary.'
       );
       return;
     }
@@ -394,10 +401,9 @@ function sendInactiveChannelsToSlack() {
     const values = dataRange.getValues();
 
     if (values.length < 2) {
-      SpreadsheetApp.getUi().alert(
+      safeAlert(
         'No Data Found',
-        'The summary sheet is empty. Please run "Fetch ClearFeed Activity" first.',
-        SpreadsheetApp.getUi().ButtonSet.OK
+        'The summary sheet is empty. Please run "Fetch ClearFeed Activity" first.'
       );
       return;
     }
@@ -407,10 +413,9 @@ function sendInactiveChannelsToSlack() {
     const activityIndex = headers.indexOf(activityColumn);
 
     if (activityIndex === -1) {
-      SpreadsheetApp.getUi().alert(
+      safeAlert(
         'Data Mismatch',
-        `The activity column "${activityColumn}" was not found in the summary sheet. Please fetch fresh data.`,
-        SpreadsheetApp.getUi().ButtonSet.OK
+        `The activity column "${activityColumn}" was not found in the summary sheet. Please fetch fresh data.`
       );
       return;
     }
@@ -443,10 +448,9 @@ function sendInactiveChannelsToSlack() {
     }
 
     if (inactiveChannels.length === 0) {
-      SpreadsheetApp.getUi().alert(
+      safeAlert(
         'No Inactive Channels',
-        `Great news! All channels have been active in the last ${CONFIG.LOOKBACK_DAYS} days.`,
-        SpreadsheetApp.getUi().ButtonSet.OK
+        `Great news! All channels have been active in the last ${CONFIG.LOOKBACK_DAYS} days.`
       );
       return;
     }
@@ -467,13 +471,12 @@ function sendInactiveChannelsToSlack() {
 
     if (messagesSent > 0) {
       Logger.log(`Successfully sent ${messagesSent} message(s) with ${inactiveChannels.length} inactive channels to Slack`);
-      SpreadsheetApp.getUi().alert(
+      safeAlert(
         'Success',
         `Successfully sent inactive channel list to Slack!\n\n` +
         `Total inactive channels: ${inactiveChannels.length}\n` +
         `Messages sent: ${messagesSent}\n` +
-        `Lookback period: Last ${CONFIG.LOOKBACK_DAYS} days`,
-        SpreadsheetApp.getUi().ButtonSet.OK
+        `Lookback period: Last ${CONFIG.LOOKBACK_DAYS} days`
       );
     } else {
       throw new Error('Failed to send to Slack. Check logs for details.');
@@ -481,10 +484,9 @@ function sendInactiveChannelsToSlack() {
 
   } catch (error) {
     Logger.log(`Error sending to Slack: ${error.toString()}`);
-    SpreadsheetApp.getUi().alert(
+    safeAlert(
       'Error',
-      `Failed to send to Slack: ${error.toString()}`,
-      SpreadsheetApp.getUi().ButtonSet.OK
+      `Failed to send to Slack: ${error.toString()}`
     );
   }
 }
@@ -602,12 +604,11 @@ function buildAndSendSlackMessages(totalInactive, groupedByCollection) {
   }
 
   // Show initial alert to user with estimated time
-  SpreadsheetApp.getUi().alert(
+  safeAlert(
     'Sending to Slack',
     `Sending ${totalChunks} message(s) to Slack...\n\n` +
     `This will take approximately ${estimatedTimeSeconds} seconds (${estimatedTimeMinutes} minute(s)).\n\n` +
-    `Please wait while messages are being sent.`,
-    SpreadsheetApp.getUi().ButtonSet.OK
+    `Please wait while messages are being sent.`
   );
 
   // Now send all messages with delays
