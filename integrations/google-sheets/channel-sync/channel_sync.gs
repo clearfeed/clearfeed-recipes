@@ -146,7 +146,7 @@ function showLogs() {
 
 /**
  * Read channel mappings from the sheet
- * Expects format: Collection | Slack channel | Channel ID
+ * Expects format: Collection | Slack channel (optional) | Channel ID
  * Skips the header row (row 1)
  */
 function readSheetData() {
@@ -168,14 +168,15 @@ function readSheetData() {
     const channelName = row[1];
     const channelId = row[2];
 
-    // Skip rows with missing data
-    if (!collectionName || !channelName || !channelId) {
+    // Skip rows with missing required data (collection and channel ID)
+    if (!collectionName || !channelId) {
       continue;
     }
 
-    // Trim whitespace and remove # prefix from channel ID
+    // Trim whitespace
     const trimmedCollection = String(collectionName).trim();
-    const trimmedChannelName = String(channelName).trim();
+    // channelName is now optional - if empty, will be filled from API later
+    const trimmedChannelName = channelName ? String(channelName).trim() : '';
     let trimmedChannelId = String(channelId).trim();
     // Remove leading # from channel ID if present
     if (trimmedChannelId.startsWith('#')) {
@@ -380,6 +381,7 @@ function generateActionPlan(sheetData, collections) {
   const collectionNameToId = {};
   const collectionOwners = {}; // collection_id -> most common owner
   const actualChannelToCollection = {}; // normalized channel_id -> collection_id
+  const channelIdToName = {}; // channel_id -> channel_name from API
 
   for (const col of collections) {
     const normalizedName = normalizeCollectionName(col.name);
@@ -390,6 +392,10 @@ function generateActionPlan(sheetData, collections) {
     const ownerCounts = {};
     for (const ch of (col.channels || [])) {
       actualChannelToCollection[ch.id] = col.id;
+      // Store channel name from API for later use
+      if (ch.name) {
+        channelIdToName[ch.id] = ch.name;
+      }
       // Track most common owner for this collection
       if (ch.owner) {
         ownerCounts[ch.owner] = (ownerCounts[ch.owner] || 0) + 1;
@@ -423,8 +429,9 @@ function generateActionPlan(sheetData, collections) {
 
     const collectionId = collectionNameToId[normalizedCol];
     desiredChannelToCollection[mapping.channel_id] = collectionId;
+    // Use fallback chain: sheet name → API name → channel ID
     channelInfo[mapping.channel_id] = {
-      name: mapping.channel_name,
+      name: mapping.channel_name || channelIdToName[mapping.channel_id] || mapping.channel_id,
       collection_name: mapping.collection_name,
       collection_id: collectionId
     };

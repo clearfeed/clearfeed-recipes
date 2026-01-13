@@ -25,22 +25,24 @@ Before you begin, make sure you have:
 2. (Optional) Rename the sheet tab - if you have only one sheet, the script will use it automatically
 3. Add the following headers in the first row:
 
-| Collection | Slack channel | Channel ID |
-|------------|---------------|------------|
+| Collection | Slack channel (optional) | Channel ID |
+|------------|-------------------------|------------|
 | *(your data)* | *(your data)* | *(your data)* |
 
 4. Add your channel mapping data below the headers:
-   - **Collection**: The name of the ClearFeed collection
-   - **Slack channel**: The name of the Slack channel (for reference)
-   - **Channel ID**: The Slack channel ID (e.g., `C07AA9J9LJX`)
+   - **Collection** (required): The name of the ClearFeed collection
+   - **Slack channel** (optional): The name of the Slack channel - if not provided, it will be fetched from ClearFeed API
+   - **Channel ID** (required): The Slack channel ID (e.g., `C07AA9J9LJX`)
 
 Example data:
 
-| Collection | Slack channel | Channel ID |
-|------------|---------------|------------|
+| Collection | Slack channel (optional) | Channel ID |
+|------------|-------------------------|------------|
 | Support | #support-tickets | C07AA9J9LJX |
-| Engineering | #eng-help | C06BB9H9HKW |
+| Engineering | | C06BB9H9HKW |
 | Sales | sales-questions | C05CC8G8GJV |
+
+**Note:** The "Slack channel" column is optional. Channel names are only used for display purposes in logs and messages. If not provided, the script will fetch channel names from ClearFeed API when available, or fall back to showing the channel ID.
 
 ### Step 2: Open Apps Script Editor
 
@@ -121,17 +123,18 @@ Use this to sync from a different spreadsheet than where the script is installed
 
 ## Sheet Format
 
-Your sheet must have exactly 3 columns:
+Your sheet must have the following columns:
 
-| Column | Description | Example |
-|--------|-------------|---------|
-| Collection | ClearFeed collection name | Support |
-| Slack channel | Slack channel name (for reference) | #support-tickets |
-| Channel ID | Slack channel ID | C07AA9J9LJX |
+| Column | Description | Required | Example |
+|--------|-------------|----------|---------|
+| Collection | ClearFeed collection name | Yes | Support |
+| Slack channel | Slack channel name (for display only) | No | #support-tickets |
+| Channel ID | Slack channel ID | Yes | C07AA9J9LJX |
 
 **Important:**
 - The first row must contain headers
-- Channel IDs are required for the sync to work
+- Only **Collection** and **Channel ID** are required
+- The **Slack channel** column is optional - if not provided, channel names will be fetched from ClearFeed API automatically
 - Empty rows will be ignored
 - Collection names are case-insensitive
 
