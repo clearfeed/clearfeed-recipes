@@ -12,9 +12,10 @@ A Google Apps Script that syncs collection-to-channel mappings from a Google She
 
 ## Prerequisites
 
-1. A Google Account with access to Google Sheets
-2. A ClearFeed account with an API token
-3. Basic familiarity with Google Apps Script editor
+Before you begin, make sure you have:
+
+1. **A Google Account** with access to Google Sheets and Google Apps Script
+2. **A ClearFeed API Token** (see [Personal Access Token](https://docs.clearfeed.ai/clearfeed-help-center/account-setup/developer-settings#personal-access-token))
 
 ## Quick Start Guide
 
@@ -91,10 +92,7 @@ const CONFIG = {
 
 ### API_KEY (Required)
 
-Your ClearFeed API token. Get it from:
-1. Go to [app.clearfeed.ai](https://app.clearfeed.ai)
-2. Navigate to **Settings** > **API**
-3. Copy your API token
+Your ClearFeed API token (see [Personal Access Token](https://docs.clearfeed.ai/clearfeed-help-center/account-setup/developer-settings#personal-access-token)).
 
 ### SHEET_NAME
 
