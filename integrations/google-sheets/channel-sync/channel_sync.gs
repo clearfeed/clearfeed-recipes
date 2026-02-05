@@ -7,9 +7,22 @@ const CONFIG = {
   SHEET_NAME: "Channel Mappings", // Name of the sheet tab containing the mappings
   INCLUDE_DELETES: false, // Whether to actually delete channels (default: false for safety)
   SPREADSHEET_ID: "", // Leave empty to use current spreadsheet, or specify ID
+  CREATE_EMPTY_CUSTOMER: false, // Whether to create an empty customer object when adding channels
+  SET_OWNER: false, // Whether to set the owner field when adding channels
 };
 
 const BASE_URL = "https://api.clearfeed.app/v1/rest";
+
+// =============================================================================
+// Email Configuration
+// =============================================================================
+const EMAIL_CONFIG = {
+  TO: "", // Recipient email address for sync notifications (leave empty to disable emails)
+         // Example: "admin@company.com"
+  FROM: "noreply@example.com", // Sender email address (must be configured as alias in Gmail)
+  SUBJECT_PREFIX: "ClearFeed Channel Sync - ", // Prefix for email subject lines
+  SENDER_NAME: "ClearFeed Sync" // Display name for email sender
+};
 
 // =============================================================================
 // Menu Setup
@@ -37,12 +50,21 @@ function onOpen() {
  * Main function to sync channels from the sheet to ClearFeed
  */
 function syncChannels() {
+  const runStartedAt = new Date();
+
   try {
     Logger.log("Starting channel sync...");
 
     // Validate configuration
     if (!CONFIG.API_KEY || CONFIG.API_KEY === "") {
       safeAlert("Configuration Error", "Please update CONFIG.API_KEY with your ClearFeed API key.");
+      sendRunEmail_({
+        startedAt: runStartedAt,
+        completedAt: new Date(),
+        addedChannels: [],
+        removedChannels: [],
+        failures: ["Configuration Error: CONFIG.API_KEY is missing or empty."]
+      });
       return;
     }
 
@@ -50,6 +72,13 @@ function syncChannels() {
     const sheetData = readSheetData();
     if (sheetData.length === 0) {
       safeAlert("No Data", "No channel mappings found in the sheet. Please check the sheet format.");
+      sendRunEmail_({
+        startedAt: runStartedAt,
+        completedAt: new Date(),
+        addedChannels: [],
+        removedChannels: [],
+        failures: ["No Data: No channel mappings found in the sheet."]
+      });
       return;
     }
     Logger.log(`Read ${sheetData.length} channel mappings from sheet`);
@@ -90,13 +119,39 @@ function syncChannels() {
       const resultMessage = formatResultMessage(results);
       safeAlert("Sync Results", resultMessage);
       Logger.log("Channel sync completed");
+
+      // Send completion email
+      sendRunEmail_({
+        startedAt: runStartedAt,
+        completedAt: new Date(),
+        addedChannels: (results.addedChannels || []),
+        removedChannels: (results.removedChannels || []),
+        failures: (results.failures || [])
+      });
     } else {
       Logger.log("Sync cancelled by user");
+      // Send cancellation email
+      sendRunEmail_({
+        startedAt: runStartedAt,
+        completedAt: new Date(),
+        addedChannels: [],
+        removedChannels: [],
+        failures: ["Sync cancelled by user."]
+      });
     }
 
   } catch (error) {
     Logger.log(`Error during sync: ${error.toString()}`);
     safeAlert("Sync Error", `An error occurred: ${error.toString()}`);
+
+    // Send failure email
+    sendRunEmail_({
+      startedAt: runStartedAt,
+      completedAt: new Date(),
+      addedChannels: [],
+      removedChannels: [],
+      failures: [`Sync Error: ${error.toString()}`]
+    });
   }
 }
 
@@ -599,8 +654,22 @@ function executePlan(plan, skipDeletes, collectionOwners) {
     moveFailed: 0,
     removeSuccess: 0,
     removeFailed: 0,
-    removeSkipped: 0
+    removeSkipped: 0,
+    // Email tracking
+    addedChannels: [],
+    removedChannels: [],
+    failures: []
   };
+
+  // Build lookup maps for email details
+  const addItemById = {};
+  for (const item of plan.toAdd) {
+    addItemById[item.channel_id] = item;
+  }
+  const removeItemById = {};
+  for (const item of plan.toRemove) {
+    removeItemById[item.channel_id] = item;
+  }
 
   // Group adds by collection for efficiency
   const addsByCollection = {};
@@ -608,10 +677,18 @@ function executePlan(plan, skipDeletes, collectionOwners) {
     if (!addsByCollection[item.collection_id]) {
       addsByCollection[item.collection_id] = [];
     }
-    addsByCollection[item.collection_id].push({
-      id: item.channel_id,
-      owner: collectionOwners[item.collection_id] || ''
-    });
+    const channelObj = {
+      id: item.channel_id
+    };
+    // Add owner if enabled
+    if (CONFIG.SET_OWNER) {
+      channelObj.owner = collectionOwners[item.collection_id] || '';
+    }
+    // Add empty customer object if enabled
+    if (CONFIG.CREATE_EMPTY_CUSTOMER) {
+      channelObj.customer = { type: 'new' };
+    }
+    addsByCollection[item.collection_id].push(channelObj);
   }
 
   // Execute adds (grouped by collection)
@@ -621,13 +698,39 @@ function executePlan(plan, skipDeletes, collectionOwners) {
       if (result.success) {
         results.addSuccess += channels.length;
         Logger.log(`✅ Added ${channels.length} channels to collection ${collectionId}`);
+
+        // Track for email
+        for (const ch of channels) {
+          const item = addItemById[ch.id];
+          results.addedChannels.push({
+            id: ch.id,
+            name: (item && item.channel_name) ? item.channel_name : ch.id,
+            collection: item ? item.collection_name : ''
+          });
+        }
       } else {
         results.addFailed += channels.length;
         Logger.log(`❌ Failed to add channels to collection ${collectionId}: ${result.error}`);
+
+        // Track failure for email
+        const failedList = channels.map(function(ch) {
+          const item = addItemById[ch.id];
+          const nm = (item && item.channel_name) ? item.channel_name : ch.id;
+          return `${ch.id} - ${nm}`;
+        }).join(', ');
+        results.failures.push(`Add failed (collection ${collectionId}): ${result.error}. Channels: ${failedList}`);
       }
     } catch (error) {
       results.addFailed += channels.length;
       Logger.log(`❌ Error adding channels to collection ${collectionId}: ${error.toString()}`);
+
+      // Track failure for email
+      const failedList = channels.map(function(ch) {
+        const item = addItemById[ch.id];
+        const nm = (item && item.channel_name) ? item.channel_name : ch.id;
+        return `${ch.id} - ${nm}`;
+      }).join(', ');
+      results.failures.push(`Add error (collection ${collectionId}): ${error.toString()}. Channels: ${failedList}`);
     }
   }
 
@@ -641,10 +744,16 @@ function executePlan(plan, skipDeletes, collectionOwners) {
       } else {
         results.moveFailed++;
         Logger.log(`❌ Failed to move channel ${item.channel_name} (${item.channel_id}): ${result.error}`);
+
+        // Track failure for email
+        results.failures.push(`Move failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
       }
     } catch (error) {
       results.moveFailed++;
       Logger.log(`❌ Error moving channel ${item.channel_name} (${item.channel_id}): ${error.toString()}`);
+
+      // Track failure for email
+      results.failures.push(`Move error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
     }
   }
 
@@ -653,6 +762,9 @@ function executePlan(plan, skipDeletes, collectionOwners) {
     if (skipDeletes) {
       results.removeSkipped++;
       Logger.log(`⏭️ Skipped removal of channel ${item.channel_name} (${item.channel_id}) - deletes disabled`);
+
+      // Track skipped as informational for email
+      results.failures.push(`Remove skipped (deletes disabled): ${item.channel_id} - ${item.channel_name}`);
       continue;
     }
 
@@ -661,13 +773,26 @@ function executePlan(plan, skipDeletes, collectionOwners) {
       if (result.success) {
         results.removeSuccess++;
         Logger.log(`✅ Removed channel ${item.channel_name} (${item.channel_id})`);
+
+        // Track for email
+        results.removedChannels.push({
+          id: item.channel_id,
+          name: item.channel_name || item.channel_id,
+          collection: item.collection_name || ''
+        });
       } else {
         results.removeFailed++;
         Logger.log(`❌ Failed to remove channel ${item.channel_name} (${item.channel_id}): ${result.error}`);
+
+        // Track failure for email
+        results.failures.push(`Remove failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
       }
     } catch (error) {
       results.removeFailed++;
       Logger.log(`❌ Error removing channel ${item.channel_name} (${item.channel_id}): ${error.toString()}`);
+
+      // Track failure for email
+      results.failures.push(`Remove error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
     }
   }
 
@@ -750,5 +875,88 @@ function isInteractiveMode() {
     return true;
   } catch (e) {
     return false;
+  }
+}
+
+// =============================================================================
+// Email Helper Functions
+// =============================================================================
+
+/**
+ * Format run timestamp for email subject
+ */
+function formatRunTimestamp_() {
+  const tz = Session.getScriptTimeZone ? Session.getScriptTimeZone() : 'GMT';
+  // HH:MM:SS DD MMM YYYY
+  return Utilities.formatDate(new Date(), tz, 'HH:mm:ss dd MMM yyyy');
+}
+
+/**
+ * Format channel list for email body
+ */
+function formatChannelLines_(channels) {
+  if (!channels || channels.length === 0) return 'None';
+  return channels.map(function(ch) {
+    const id = ch.id || '';
+    const name = ch.name || '';
+    const collection = ch.collection ? ` (${ch.collection})` : '';
+    return `${id} - ${name}${collection}`;
+  }).join('\n');
+}
+
+/**
+ * Format failures list for email body
+ */
+function formatFailures_(failures) {
+  if (!failures || failures.length === 0) return 'None';
+  return failures.map(function(f) {
+    return `- ${f}`;
+  }).join('\n');
+}
+
+/**
+ * Send run completion email
+ */
+function sendRunEmail_(runData) {
+  // Skip sending email if TO is not configured
+  if (!EMAIL_CONFIG.TO || EMAIL_CONFIG.TO === "") {
+    Logger.log("Email sending disabled: EMAIL_CONFIG.TO is empty");
+    return;
+  }
+
+  const timestamp = formatRunTimestamp_();
+  const subject = `${EMAIL_CONFIG.SUBJECT_PREFIX}[${timestamp}]`;
+
+  const bodyLines = [];
+  bodyLines.push('Script completed the run:');
+  bodyLines.push('');
+  bodyLines.push('Channels Added:');
+  bodyLines.push(formatChannelLines_(runData.addedChannels));
+  bodyLines.push('');
+  bodyLines.push('Channels Removed:');
+  bodyLines.push(formatChannelLines_(runData.removedChannels));
+  bodyLines.push('');
+  bodyLines.push('Failures:');
+  bodyLines.push(formatFailures_(runData.failures));
+
+  const body = bodyLines.join('\n');
+
+  // Attempt to send with explicit FROM first (works if alias is configured)
+  try {
+    GmailApp.sendEmail(EMAIL_CONFIG.TO, subject, body, {
+      from: EMAIL_CONFIG.FROM,
+      name: EMAIL_CONFIG.SENDER_NAME,
+      replyTo: EMAIL_CONFIG.FROM
+    });
+  } catch (e) {
+    // Fallback if alias/from is not permitted in this environment
+    try {
+      MailApp.sendEmail(EMAIL_CONFIG.TO, subject, body, {
+        name: EMAIL_CONFIG.SENDER_NAME,
+        replyTo: EMAIL_CONFIG.FROM
+      });
+    } catch (e2) {
+      Logger.log(`Failed to send run email: ${e2.toString()}`);
+    }
   }
 }
