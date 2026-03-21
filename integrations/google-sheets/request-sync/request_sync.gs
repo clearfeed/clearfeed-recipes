@@ -6,12 +6,24 @@ const CONFIG = {
   SHEET_NAME: "ClearFeed Requests", // Name of the sheet tab
   SPREADSHEET_ID: "", // Leave empty to use current spreadsheet, or specify ID
   INITIAL_DAYS_BACK: 14, // For initial sync, fetch requests from this many days back
-  INCLUDE_MESSAGES: false // Set to true to include messages in the sync (disabled by default)
+  INCLUDE_MESSAGES: false, // Set to true to include messages in the sync (disabled by default)
+  SLACK_TOKEN: "" // Optional: Slack Bot Token (xoxb-...) with users:read scope to fetch user names. Leave empty to show IDs only.
 };
 
 const BASE_URL="https://api.clearfeed.app/v1/rest/requests";
 const LAST_SYNC_PROPERTY = "LAST_SYNC_PROPERTY";
 const CUSTOM_FIELDS_URL = 'https://api.clearfeed.app/v1/rest/custom-fields';
+
+// Extra columns that are not in the base request object but need special handling
+const EXTRA_COLUMNS = [
+  'CSAT_Survey',
+  'Channel',
+  'Collection',
+  'Request_Channel_URL',
+  'Triage_Channel_URL',
+  'First_Response_Time',
+  'Resolution_Time'
+];
 
 
 /**
@@ -33,6 +45,10 @@ function syncClearfeedRequests() {
       Logger.log(`Initial sync will fetch requests created in last ${CONFIG.INITIAL_DAYS_BACK} days`);
     }
 
+    // Fetch custom field data once at the beginning (efficient single API call)
+    const cfData = getCustomFieldData();
+    Logger.log(`Fetched ${cfData.length} custom fields`);
+
     // Fetch requests from Clearfeed
     const requests = fetchClearfeedRequests(isInitialSync, lastSyncTime);
     Logger.log(`Fetched ${requests.length} requests`);
@@ -44,9 +60,9 @@ function syncClearfeedRequests() {
 
     // Update the sheet
     if (isInitialSync) {
-      populateInitialData(sheet, requests);
+      populateInitialData(sheet, requests, cfData);
     } else {
-      mergeIncrementalData(sheet, requests);
+      mergeIncrementalData(sheet, requests, cfData);
     }
 
     // Update last sync time
@@ -204,6 +220,58 @@ function resolveCustomFieldValue(rawValue, cf) {
 }
 
 /**
+ * Get Slack user name from user ID with caching
+ * @param {string} userId - Slack user ID (e.g., UABC123)
+ * @returns {string} User display name or original ID if lookup fails
+ */
+function getSlackUserName(userId) {
+  if (!userId) return '';
+  if (!CONFIG.SLACK_TOKEN) return userId; // Return ID if no token configured
+
+  // Check cache first (using script properties for persistent cache)
+  const cache = PropertiesService.getScriptProperties();
+  const cacheKey = `slack_user_${userId}`;
+  const cachedName = cache.getProperty(cacheKey);
+
+  if (cachedName) {
+    return cachedName;
+  }
+
+  try {
+    // Call Slack API to get user info (using GET with query parameter)
+    const url = `https://slack.com/api/users.info?user=${encodeURIComponent(userId)}`;
+    const response = UrlFetchApp.fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${CONFIG.SLACK_TOKEN}`
+      },
+      muteHttpExceptions: true
+    });
+
+    const result = JSON.parse(response.getContentText());
+    Logger.log(`Slack API response for ${userId}: ${response.getContentText()}`);
+
+    if (result.ok && result.user) {
+      // Use real_name if available, otherwise fall back to name
+      const userName = result.user.real_name || result.user.name || userId;
+
+      // Cache the result (no expiration - stored until manually cleared)
+      cache.setProperty(cacheKey, userName);
+
+      Logger.log(`Resolved Slack user ${userId} to "${userName}"`);
+      return userName;
+    } else {
+      Logger.log(`Slack API error for ${userId}: ${result.error || 'Unknown error'}`);
+    }
+  } catch (error) {
+    Logger.log(`Error fetching Slack user ${userId}: ${error.toString()}`);
+  }
+
+  // Fallback to returning the original ID
+  return userId;
+}
+
+/**
  * Get or create the target sheet
  */
 
@@ -246,14 +314,14 @@ function setLastSyncTime(timestamp) {
  * Populate sheet with initial data (first run)
  */
 
-function populateInitialData(sheet, requests) {
+function populateInitialData(sheet, requests, cfData) {
   if (requests.length === 0) return;
 
   // Clear existing data
   sheet.clear();
 
   // Create headers based on the first request structure
-  const headers = getRequestHeaders();
+  const headers = getRequestHeaders(cfData);
 
   // Set headers
   const headerRange = sheet.getRange(1, 1, 1, headers.length);
@@ -262,7 +330,7 @@ function populateInitialData(sheet, requests) {
   headerRange.setBackground('#f0f0f0');
 
   // Add data rows
-  const dataRows = requests.map(request => extractRequestData(request, headers));
+  const dataRows = requests.map(request => extractRequestData(request, headers, cfData));
 
   if (dataRows.length > 0) {
     const dataRange = sheet.getRange(2, 1, dataRows.length, headers.length);
@@ -277,14 +345,14 @@ function populateInitialData(sheet, requests) {
  * Merge incremental data into existing sheet
  */
 
-function mergeIncrementalData(sheet, requests) {
+function mergeIncrementalData(sheet, requests, cfData) {
   if (requests.length === 0) return;
 
   // Get existing data
   const lastRow = sheet.getLastRow();
   if (lastRow < 1) {
     // No existing data, treat as initial sync
-    populateInitialData(sheet, requests);
+    populateInitialData(sheet, requests, cfData);
     return;
   }
 
@@ -307,7 +375,7 @@ function mergeIncrementalData(sheet, requests) {
   let addedCount = 0;
 
   requests.forEach(request => {
-    const requestData = extractRequestData(request, headers);
+    const requestData = extractRequestData(request, headers, cfData);
     const requestId = request.id;
 
     if (existingRequestsMap.has(requestId)) {
@@ -329,46 +397,44 @@ function mergeIncrementalData(sheet, requests) {
 
 /**
  * Extract headers from a request object
+ * @param {Array} cfData - Custom field data fetched once per sync
  */
 
-function getRequestHeaders() {
+function getRequestHeaders(cfData) {
   const headers = [
     'id',
     'title',
     'priority',
-    'created_at',     // Displays as "created_at" in sheet
-    'updated_at',     // Displays as "updated_at" in sheet
+    'created_at',
+    'updated_at',
     'assignee',      // request.assignee.id
     'state',
     'author',        // request.author.id
-    'author_email',   // request.authoremail
-    'assigned_team',  // request.assignedteam.id
-    'tickets',        // JSON stringified array
-    'CSAT_Survey',
-    'Channel',
-    'Collection',
-    'Request_Channel_URL',
-    'Triage_Channel_URL',
-    'First_Response_Time',
-    'Resolution_Time'
+    'author_email',   // Note: This field is not provided by the ClearFeed API
+    'assigned_team',  // request.assigned_team.id
+    'tickets'
   ];
 
-  // Fetching Custom_Fields and appending their "names" as columns
-  const cfData = getCustomFieldData();
+  // Append extra columns using the constant
+  const allHeaders = headers.concat(EXTRA_COLUMNS);
+
+  // Append Custom Field names as columns
   const cfNames = cfData.map(cf => cf.name);
 
-  return headers.concat(cfNames);
+  return allHeaders.concat(cfNames);
 }
 
 /**
  * Fetching the Values of Other Standard Fields as specified in the Payload
+ * @param {Object} request - The request object
+ * @param {string} header - The header name to extract value for
+ * @returns {string} The extracted value
  */
-
-function getExtraColumnValue(request, index, header) {
+function getExtraColumnValue(request, header) {
   const csat = request.csat_survey;
 
-  switch (index) {
-    case 0: // CSAT_Survey
+  switch (header) {
+    case 'CSAT_Survey':
       if (!csat || csat.status !== 'received' || !csat.response) return '';
 
       const surveyType = csat.response.survey_type;
@@ -383,26 +449,26 @@ function getExtraColumnValue(request, index, header) {
       }
       return '';
 
-    case 1: // Channel
+    case 'Channel':
       return request.channel ? request.channel.name || '' : '';
 
-    case 2: // Collection
+    case 'Collection':
       return request.collection ? request.collection.name || '' : '';
 
-    case 3: // Request_Channel_URL
+    case 'Request_Channel_URL':
       return request.request_thread ? request.request_thread.url || '' : '';
 
-    case 4: // Triage_Channel_URL
+    case 'Triage_Channel_URL':
       return request.triage_thread ? request.triage_thread.url || '' : '';
 
-    case 5: // First_Response_Time
+    case 'First_Response_Time':
       const frt = request.sla_metrics?.first_response_time;
       if (!frt?.value) return '';
       return frt.is_breached ?
         frt.value + ' mins [Breached]' :
         frt.value + ' mins';
 
-    case 6: // Resolution_Time
+    case 'Resolution_Time':
       const rt = request.sla_metrics?.resolution_time;
       if (!rt?.value) return '';
       return rt.is_breached ?
@@ -415,45 +481,71 @@ function getExtraColumnValue(request, index, header) {
 
 /**
  * Extract data from a request object based on headers
+ * @param {Object} request - The request object
+ * @param {Array} headers - Array of header names
+ * @param {Array} cfData - Custom field data fetched once per sync
  */
-function extractRequestData(request, headers) {
+function extractRequestData(request, headers, cfData) {
   const flatRequest = flattenObject(request);
-  const cfData = getCustomFieldData();
-  const baseCount = 11;  // id,title,...tickets
 
-  return headers.map(function(header, colIndex) {
-    // Tickets hyperlinks (col 10)
+  // Create a Set of extra columns for quick lookup (using module constant)
+  const extraColumnsSet = new Set(EXTRA_COLUMNS);
+
+  // Create a map of custom field names to their definitions for quick lookup
+  const cfMap = new Map();
+  cfData.forEach(cf => {
+    cfMap.set(cf.name, cf);
+  });
+
+  return headers.map(function(header) {
+    // Special handling for tickets (hyperlinks)
     if (header === 'tickets') {
-  const tickets = request.tickets || [];
-  if (!tickets.length) return '';
+      const tickets = request.tickets || [];
+      if (!tickets.length) return '';
 
-  // Filter out clearfeed tickets
-  const nonClearfeedTickets = tickets.filter(t => t.type !== 'clearfeed');
-  if (!nonClearfeedTickets.length) return '';
+      // Filter out clearfeed tickets
+      const nonClearfeedTickets = tickets.filter(t => t.type !== 'clearfeed');
+      if (!nonClearfeedTickets.length) return '';
 
-  const links = nonClearfeedTickets.map(t =>
-    '=HYPERLINK("' + (t.url || '#') + '","' + (t.key || 'No Key') + '")'
-  );
-  return links.join(', ');
-}
-
-    // NEW COLUMNS (cols 11-17)
-    const extraIndex = colIndex - baseCount;
-    if (extraIndex >= 0 && extraIndex < 7) {
-      return getExtraColumnValue(request, extraIndex, header);
+      const links = nonClearfeedTickets.map(t =>
+        '=HYPERLINK("' + (t.url || '#') + '","' + (t.key || 'No Key') + '")'
+      );
+      return links.join(', ');
     }
 
-    // Custom fields (col 18+)
-    const cfIndex = colIndex - (baseCount + 7);
-    if (cfIndex >= 0 && cfIndex < cfData.length) {
-      const cf = cfData[cfIndex];
+    // NESTED FIELD COLUMNS - handle specially by header name
+    if (header === 'assignee') {
+      const assigneeId = request.assignee ? request.assignee.id || '' : '';
+      return assigneeId ? getSlackUserName(assigneeId) : '';
+    }
+
+    if (header === 'author') {
+      return request.author ? getSlackUserName(request.author) : '';
+    }
+
+    if (header === 'author_email') {
+      return ''; // This field is not provided by the ClearFeed API
+    }
+
+    if (header === 'assigned_team') {
+      return request.assigned_team ? request.assigned_team.id || '' : '';
+    }
+
+    // EXTRA COLUMNS - handle by header name (not index)
+    if (extraColumnsSet.has(header)) {
+      return getExtraColumnValue(request, header);
+    }
+
+    // CUSTOM FIELDS - handle by header name (not index)
+    if (cfMap.has(header)) {
+      const cf = cfMap.get(header);
       const cfValues = request.custom_field_values || {};
       const rawValue = cfValues[String(cf.id)];
       if (!rawValue) return '';
       return resolveCustomFieldValue(rawValue, cf);
     }
 
-    // Base columns
+    // BASE COLUMNS - standard field extraction
     const value = flatRequest[header];
     if (value == null) return '';
     if (header === 'messages' && Array.isArray(request.messages)) {
@@ -638,6 +730,33 @@ function resetSync() {
 }
 
 /**
+ * Utility function to clear the Slack user name cache
+ * Useful when user names change or you want to refresh the cache
+ */
+function clearUserCache() {
+  const cache = PropertiesService.getScriptProperties();
+  const properties = cache.getProperties();
+  let clearedCount = 0;
+
+  // Delete all properties that start with 'slack_user_'
+  for (const key in properties) {
+    if (key.indexOf('slack_user_') === 0) {
+      cache.deleteProperty(key);
+      clearedCount++;
+    }
+  }
+
+  Logger.log(`Cleared ${clearedCount} cached user names`);
+
+  const ui = SpreadsheetApp.getUi();
+  ui.alert(
+    'Cache Cleared',
+    `Cleared ${clearedCount} cached Slack user names. Names will be re-fetched on next sync.`,
+    ui.ButtonSet.OK
+  );
+}
+
+/**
  * Create custom menu in Google Sheet
  */
 function onOpen() {
@@ -651,6 +770,7 @@ function onOpen() {
     .addItem('⏹️ Disable Hourly Sync', 'disableHourlyTrigger')
     .addSeparator()
     .addItem('🔄 Reset Sync', 'resetSync')
+    .addItem('🗑️ Clear User Name Cache', 'clearUserCache')
     .addItem('📋 View Logs', 'showLogs');
 
   menu.addToUi();
