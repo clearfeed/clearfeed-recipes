@@ -9,13 +9,16 @@
 
 */
 
+// Global cache for skip columns (computed once to avoid CONFIG mutation)
+let globalSkipColumns = null;
+
 const CONFIG = {
   CLEARFEED_API_KEY:     "PAT_USER_TOKEN",
   SHEET_NAME:            "Collections & Customers",
   SPREADSHEET_ID:        "",
   CHANNEL_ID_COLUMN:     "Channel_ID",        // Configurable column name for Channel ID
   SKIP_COLUMNS:          ["Collection Name", "Channel_ID"],       // Auto-synced with CHANNEL_ID_COLUMN
-  MULTI_SELECT_DELIM:    "|",                  // Delimiter for multi-select values
+  MULTI_SELECT_DELIM:    "|",                  // Delimiter for separating multi-select values (default: pipe character)
   BASE_DELAY_MS:         200,                  // Reduced from 500ms for faster processing
   MAX_RETRIES:           5,
   MAX_UPDATES_PER_RUN:   500,                  // Increased from 100 - processes entire sheet at once
@@ -45,9 +48,12 @@ function validateConfig() {
     errors.push("❌ SHEET_NAME is not set. Please specify your sheet name.");
   }
 
-  // Auto-sync SKIP_COLUMNS with CHANNEL_ID_COLUMN
-  if (!CONFIG.SKIP_COLUMNS.includes(CONFIG.CHANNEL_ID_COLUMN)) {
-    CONFIG.SKIP_COLUMNS.push(CONFIG.CHANNEL_ID_COLUMN);
+  // Auto-sync SKIP_COLUMNS with CHANNEL_ID_COLUMN (use global const to avoid mutating CONFIG)
+  if (!globalSkipColumns) {
+    globalSkipColumns = [...CONFIG.SKIP_COLUMNS];
+    if (!globalSkipColumns.includes(CONFIG.CHANNEL_ID_COLUMN)) {
+      globalSkipColumns.push(CONFIG.CHANNEL_ID_COLUMN);
+    }
   }
 
   return errors;
@@ -178,7 +184,7 @@ function syncCustomFieldsFromSheet(dryRun = null) {
       const rowChanges = [];
 
       Object.entries(matchedColumns).forEach(([colHeader, cfInfo]) => {
-        const sanitized = sanitizeByType(row[colHeader], cfInfo.type, cfInfo.options, colHeader);
+        const sanitized = sanitizeByType(row[colHeader], cfInfo, colHeader);
 
         // Check if validation error occurred
         if (sanitized === '__VALIDATION_ERROR__') {
@@ -684,9 +690,11 @@ function buildCustomFieldNameInfoMap() {
       // For select and multi_select types, include options mapping
       if (cf.type === 'select' || cf.type === 'multi_select') {
         info.options = {};
+        info.optionsLower = {}; // Pre-processed lowercase map for O(1) case-insensitive lookup
         (cf.config?.options || []).forEach(opt => {
-          // Map display value to option ID for lookup
-          info.options[String(opt.value).trim()] = String(opt.id);
+          const displayValue = String(opt.value).trim();
+          info.options[displayValue] = String(opt.id);
+          info.optionsLower[displayValue.toLowerCase()] = String(opt.id);
         });
       }
 
@@ -733,10 +741,10 @@ function buildChannelIdCustomerMap() {
       (c.channel_ids || []).forEach(channelId => {
         const trimmedChannelId = String(channelId).trim();
 
-        // Check for duplicate channel IDs (data integrity issue)
+        // Check for duplicate channel IDs (data integrity issue in ClearFeed)
         if (seenChannelIds.has(trimmedChannelId)) {
           const existingCustomer = channelIdToCustomer[trimmedChannelId].customerName;
-          warnings.push(`Duplicate Channel ID "${trimmedChannelId}" found for customers "${existingCustomer}" and "${customerName}". Using "${customerName}".`);
+          warnings.push(`⚠️ DATA INTEGRITY ISSUE: Duplicate Channel ID "${trimmedChannelId}" found for customers "${existingCustomer}" and "${customerName}". Using latest: "${customerName}".`);
         }
 
         seenChannelIds.add(trimmedChannelId);
@@ -836,7 +844,7 @@ function identifyAndValidateColumns(headers, customFieldNameToInfo) {
   const unmatched = [];
 
   headers.forEach(header => {
-    if (CONFIG.SKIP_COLUMNS.includes(header)) return;
+    if (globalSkipColumns.includes(header)) return;
 
     if (customFieldNameToInfo[header]) {
       matched[header] = customFieldNameToInfo[header];
@@ -877,8 +885,14 @@ function readSheet(sheet) {
  * Sanitizes values based on field type
  * For select/multi_select: validates against options and returns option ID
  * Returns '__VALIDATION_ERROR__' if value validation fails for select fields
+ * @param {any} value - The raw value from the sheet
+ * @param {object} cfInfo - Custom field info containing { type, options, optionsLower }
+ * @param {string} columnName - Column name for error messages
  */
-function sanitizeByType(value, fieldType, options = null, columnName = '') {
+function sanitizeByType(value, cfInfo, columnName = '') {
+  const fieldType = cfInfo?.type;
+  const options = cfInfo?.options;
+  const optionsLower = cfInfo?.optionsLower;
   const raw = (value === null || value === undefined) ? '' : value;
 
   switch (fieldType) {
@@ -905,17 +919,15 @@ function sanitizeByType(value, fieldType, options = null, columnName = '') {
 
       // For select fields, validate the value exists in options
       if (options && typeof options === 'object') {
-        // Try to find matching option (case-sensitive first, then case-insensitive)
+        // Try exact match first
         if (options[str] !== undefined) {
           return options[str]; // Return the option ID
         }
 
-        // Try case-insensitive match
+        // Try case-insensitive match using pre-processed lowercase map (O(1) lookup)
         const lowerStr = str.toLowerCase();
-        for (const [optValue, optId] of Object.entries(options)) {
-          if (optValue.toLowerCase() === lowerStr) {
-            return optId;
-          }
+        if (optionsLower && optionsLower[lowerStr] !== undefined) {
+          return optionsLower[lowerStr];
         }
 
         // Value not found in options - log error and return marker
@@ -937,17 +949,11 @@ function sanitizeByType(value, fieldType, options = null, columnName = '') {
             if (options[str] !== undefined) {
               validatedIds.push(options[str]);
             } else {
-              // Try case-insensitive match
-              let found = false;
+              // Try case-insensitive match using pre-processed lowercase map (O(1) lookup)
               const lowerStr = str.toLowerCase();
-              for (const [optValue, optId] of Object.entries(options)) {
-                if (optValue.toLowerCase() === lowerStr) {
-                  validatedIds.push(optId);
-                  found = true;
-                  break;
-                }
-              }
-              if (!found) {
+              if (optionsLower && optionsLower[lowerStr] !== undefined) {
+                validatedIds.push(optionsLower[lowerStr]);
+              } else {
                 Logger.log(`❌ Validation Error: Column "${columnName}" - Value "${str}" not found in multi_select options`);
                 return '__VALIDATION_ERROR__';
               }
@@ -973,17 +979,11 @@ function sanitizeByType(value, fieldType, options = null, columnName = '') {
           if (options[val] !== undefined) {
             validatedIds.push(options[val]);
           } else {
-            // Try case-insensitive match
-            let found = false;
+            // Try case-insensitive match using pre-processed lowercase map (O(1) lookup)
             const lowerVal = val.toLowerCase();
-            for (const [optValue, optId] of Object.entries(options)) {
-              if (optValue.toLowerCase() === lowerVal) {
-                validatedIds.push(optId);
-                found = true;
-                break;
-              }
-            }
-            if (!found) {
+            if (optionsLower && optionsLower[lowerVal] !== undefined) {
+              validatedIds.push(optionsLower[lowerVal]);
+            } else {
               Logger.log(`❌ Validation Error: Column "${columnName}" - Value "${val}" not found in multi_select options`);
               return '__VALIDATION_ERROR__';
             }
