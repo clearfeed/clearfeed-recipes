@@ -6,9 +6,18 @@ A Google Apps Script integration that syncs customer custom field values from a 
 
 This integration allows you to manage ClearFeed customer custom fields in bulk using Google Sheets. It reads customer data organized by Channel ID and updates the corresponding customer records in ClearFeed with custom field values.
 
+**How it works:**
+1. **Download Channel IDs** — Fetch all channels from your ClearFeed collections and populate them in the sheet
+2. **Add Custom Field Columns** — Create columns for each ClearFeed customer custom field you want to manage
+3. **Fill in Values** — Enter the custom field values for each channel
+4. **Sync Custom Fields** — Push the values from the sheet to ClearFeed customers
+5. **Repeat** — As new channels are added to ClearFeed, re-download channels and repeat the process
+
 ## Key Features
 
+- **Channel Discovery**: Automatically fetches all channels from ClearFeed collections — no need to manually find Channel IDs
 - **Bidirectional Mapping**: Maps sheet columns to ClearFeed customer custom fields by name
+- **Incremental Updates**: Download Channel IDs updates existing channel names and adds new channels
 - **Batch Processing**: Process up to 500 customer updates per run
 - **Validation**: Comprehensive validation including duplicate channel checks, field type validation, and value validation
 - **Dry Run Mode**: Preview changes before applying them
@@ -20,11 +29,10 @@ This integration allows you to manage ClearFeed customer custom fields in bulk u
 
 Before using this integration:
 
-1. **Custom Fields in ClearFeed**: Each column in your sheet must have a corresponding custom field defined in ClearFeed for the `customer` entity type
+1. **Custom Fields in ClearFeed**: Define customer custom fields in ClearFeed for each property you want to manage
 2. **Column Naming**: Sheet column names must match custom field names exactly (case-sensitive)
-3. **Channel ID Column**: Your sheet must have a `Channel_ID` column containing Slack Channel IDs (e.g., "C04TCQTRMT3")
-4. **Select Field Values**: For `select` and `multi_select` fields, cell values must match the option display text exactly
-5. **Multi-Select Delimiter**: Separate multiple values in `multi_select` fields with pipe character `|` (e.g., "Option A | Option B")
+3. **Select Field Values**: For `select` and `multi_select` fields, cell values must match the option display text exactly
+4. **Multi-Select Delimiter**: Separate multiple values in `multi_select` fields with pipe character `|` (e.g., "Option A | Option B")
 
 ## Setup
 
@@ -32,11 +40,13 @@ Before using this integration:
 
 Create a sheet with the following structure:
 
-| Collection Name | Channel_ID | Custom Field 1 | Custom Field 2 | ... |
-|----------------|------------|----------------|----------------|-----|
-| My Collection  | C04TCQTRMT3 | Value 1        | Value 2        | ... |
+| Collection_Name | Channel_ID | Channel_Name | Custom Field 1 | Custom Field 2 | ... |
+|----------------|------------|--------------|----------------|----------------|-----|
+| My Collection  | C04TCQTRMT3 | my-channel   | Value 1        | Value 2        | ... |
 
-- **Channel_ID column**: Required - contains the Slack Channel ID for each customer
+- **Channel_ID column**: Required - contains the Slack Channel ID for each customer. Use "Download Channel IDs" from the menu to auto-populate this column.
+- **Channel_Name column**: Auto-populated by "Download Channel IDs" — shows the channel name for reference.
+- **Collection_Name column**: Auto-populated by "Download Channel IDs" — shows the collection the channel belongs to.
 - **Other columns**: Must match your ClearFeed custom field names exactly
 
 ### 2. Install the Script
@@ -54,10 +64,12 @@ Edit the `CONFIG` object at the top of the script:
 ```javascript
 const CONFIG = {
   CLEARFEED_API_KEY:     "your-pat-token-here",  // Your ClearFeed PAT token
-  SHEET_NAME:            "Sheet1",                // Your sheet name
+  SHEET_NAME:            "Sheet1",                // Optional: Name of the sheet tab (only used if spreadsheet has multiple sheets)
   SPREADSHEET_ID:        "",                      // Optional: for standalone script
   CHANNEL_ID_COLUMN:     "Channel_ID",            // Column name for Channel ID
-  SKIP_COLUMNS:          ["Collection Name", "Channel_ID"],
+  CHANNEL_NAME_COLUMN:   "Channel_Name",          // Column name for Channel Name (populated by Download Channel IDs)
+  COLLECTION_NAME_COLUMN: "Collection_Name",      // Column name for Collection Name (populated by Download Channel IDs)
+  SKIP_COLUMNS:          ["Collection_Name", "Channel_ID", "Channel_Name"],
   MULTI_SELECT_DELIM:    "|",                     // Multi-select value delimiter
   // ... other settings
 };
@@ -72,41 +84,62 @@ const CONFIG = {
 
 ## Usage
 
+### Workflow
+
+The typical workflow for using this integration:
+
+1. **Download Channel IDs** — Fetch all channels from your ClearFeed collections. This automatically creates `Channel_ID`, `Channel_Name`, and `Collection_Name` columns and populates them with your channels.
+2. **Add Custom Field Columns** — Add new columns to your sheet for each customer custom field you want to manage. Column names must match your ClearFeed custom field names exactly.
+3. **Fill in Values** — Enter the custom field values for each channel row.
+4. **Sync Custom Fields** — Run "Sync Custom Fields" to push the values to ClearFeed customers.
+5. **Repeat** — As new channels are added to ClearFeed, run "Download Channel IDs" again to add them to the sheet, then fill in their values and sync.
+
 ### Menu Options
 
-After installing, a **"🔵 ClearFeed Mapper"** menu will appear with these options:
+After installing, a **"ClearFeed Customer Field Sync"** menu will appear with these options:
 
 | Option | Description |
 |--------|-------------|
-| **Sync Custom Fields → ClearFeed** | Perform the sync with validation |
-| **Dry Run (Preview Changes)** | Preview changes without applying them |
+| **Download Channel IDs** | Fetch all channels from ClearFeed collections. Adds new channels to the sheet and updates existing channel names. |
+| **Sync Custom Fields** | Perform the sync with validation. Updates customer records in ClearFeed with values from the sheet. |
+| **Sync Custom Fields (Dry Run)** | Preview changes without applying them. Shows what would be updated if you ran the sync. |
 | **Test Connection** | Verify API credentials and sheet access |
 | **Enable Hourly Sync** | Set up automatic hourly sync trigger |
 | **Disable Hourly Sync** | Remove automatic sync trigger |
-| **Force Sync (Skip Validation)** | Sync without validation checks |
 
-### Sync Process
+### Download Channel IDs Process
 
-The sync follows these steps:
+When you run **Download Channel IDs**:
 
-1. **Configuration Validation**: Verifies API key and sheet settings
-2. **Sheet Structure Validation**: Checks required columns exist
-3. **Fetch Customers**: Retrieves all customers from ClearFeed (paginated)
-4. **Build Channel Map**: Creates Channel ID → Customer mapping
-5. **Fetch Custom Fields**: Retrieves all customer custom fields from ClearFeed
-6. **Column Matching**: Matches sheet columns to custom fields
-7. **Data Validation**: Validates all data before sync
-8. **Update Customers**: Patches customer records with new values
+1. **Fetch Collections** — Retrieves all collections from ClearFeed with their channels
+2. **Create Columns** — If `Channel_ID`, `Channel_Name`, or `Collection_Name` columns don't exist, they are created automatically
+3. **Update Existing** — For channels already in the sheet, updates `Channel_Name` and `Collection_Name` if they've changed
+4. **Add New** — Appends any new channels to the bottom of the sheet
+
+### Sync Custom Fields Process
+
+When you run **Sync Custom Fields**:
+
+1. **Configuration Validation** — Verifies API key and sheet settings
+2. **Sheet Structure Validation** — Checks required columns exist
+3. **Fetch Customers** — Retrieves all customers from ClearFeed (paginated)
+4. **Build Channel Map** — Creates Channel ID → Customer mapping
+5. **Fetch Custom Fields** — Retrieves all customer custom fields from ClearFeed
+6. **Column Matching** — Matches sheet columns to custom fields
+7. **Data Validation** — Validates all data before sync
+8. **Update Customers** — Patches customer records with new values
 
 ## Configuration Options
 
 | Setting | Description | Default |
 |---------|-------------|---------|
 | `CLEARFEED_API_KEY` | Your ClearFeed PAT token | Required |
-| `SHEET_NAME` | Target sheet name | Required |
+| `SHEET_NAME` | Name of the sheet tab (only used if spreadsheet has multiple sheets) | Optional |
 | `SPREADSHEET_ID` | For standalone scripts | Optional |
 | `CHANNEL_ID_COLUMN` | Name of Channel ID column | "Channel_ID" |
-| `SKIP_COLUMNS` | Columns to ignore during sync | ["Collection Name", "Channel_ID"] |
+| `CHANNEL_NAME_COLUMN` | Name of Channel Name column (populated by Download Channel IDs) | "Channel_Name" |
+| `COLLECTION_NAME_COLUMN` | Name of Collection Name column (populated by Download Channel IDs) | "Collection_Name" |
+| `SKIP_COLUMNS` | Columns to ignore during sync | ["Collection_Name", "Channel_ID", "Channel_Name"] |
 | `MULTI_SELECT_DELIM` | Multi-select value separator | "\|" |
 | `BASE_DELAY_MS` | Delay between API calls | 200 |
 | `MAX_RETRIES` | Retry attempts for failed requests | 5 |
@@ -167,6 +200,7 @@ The integration performs comprehensive validation:
 
 ## API Endpoints Used
 
+- `GET /v1/rest/collections?include=channels` - Fetch all collections with channels (for Download Channel IDs)
 - `GET /v1/rest/customers` - Fetch all customers (paginated)
 - `GET /v1/rest/custom-fields?entity_type=customer` - Fetch custom field definitions
 - `PATCH /v1/rest/customers/{id}` - Update customer custom fields

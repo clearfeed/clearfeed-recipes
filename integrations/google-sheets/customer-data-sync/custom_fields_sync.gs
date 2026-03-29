@@ -14,10 +14,12 @@ let globalSkipColumns = null;
 
 const CONFIG = {
   CLEARFEED_API_KEY:     "PAT_USER_TOKEN",
-  SHEET_NAME:            "Collections & Customers",
-  SPREADSHEET_ID:        "",
-  CHANNEL_ID_COLUMN:     "Channel_ID",        // Configurable column name for Channel ID
-  SKIP_COLUMNS:          ["Collection Name", "Channel_ID"],       // Auto-synced with CHANNEL_ID_COLUMN
+  SHEET_NAME:            "Collections & Customers", // Name of the sheet tab (only used if spreadsheet has multiple sheets)
+  SPREADSHEET_ID:        "",                       // Leave empty to use current spreadsheet
+  CHANNEL_ID_COLUMN:     "Channel_ID",            // Configurable column name for Channel ID
+  CHANNEL_NAME_COLUMN:   "Channel_Name",          // Column name for Channel Name (populated by Sync Channel IDs)
+  COLLECTION_NAME_COLUMN: "Collection_Name",      // Column name for Collection Name
+  SKIP_COLUMNS:          ["Collection_Name", "Channel_ID", "Channel_Name"],       // Auto-synced with CHANNEL_ID_COLUMN
   MULTI_SELECT_DELIM:    "|",                  // Delimiter for separating multi-select values (default: pipe character)
   BASE_DELAY_MS:         200,                  // Reduced from 500ms for faster processing
   MAX_RETRIES:           5,
@@ -48,12 +50,14 @@ function validateConfig() {
     errors.push("❌ SHEET_NAME is not set. Please specify your sheet name.");
   }
 
-  // Auto-sync SKIP_COLUMNS with CHANNEL_ID_COLUMN (use global const to avoid mutating CONFIG)
+  // Auto-sync SKIP_COLUMNS with configurable column names (use global const to avoid mutating CONFIG)
   if (!globalSkipColumns) {
     globalSkipColumns = [...CONFIG.SKIP_COLUMNS];
-    if (!globalSkipColumns.includes(CONFIG.CHANNEL_ID_COLUMN)) {
-      globalSkipColumns.push(CONFIG.CHANNEL_ID_COLUMN);
-    }
+    [CONFIG.CHANNEL_ID_COLUMN, CONFIG.CHANNEL_NAME_COLUMN, CONFIG.COLLECTION_NAME_COLUMN].forEach(col => {
+      if (col && !globalSkipColumns.includes(col)) {
+        globalSkipColumns.push(col);
+      }
+    });
   }
 
   return errors;
@@ -269,7 +273,7 @@ function syncCustomFieldsFromSheet(dryRun = null) {
     let alertMessage = summary.alertMessage;
     if (dryRun && changes.length > 0) {
       alertMessage += '\n\n🔍 This was a DRY RUN. No changes were made to ClearFeed.';
-      alertMessage += '\n\nTo apply changes, run "Force Sync (Skip Validation)" from the menu.';
+      alertMessage += '\n\nTo apply changes, run "Sync Custom Fields" from the menu.';
     }
 
     SpreadsheetApp.getUi().alert(summary.alertTitle, alertMessage, SpreadsheetApp.getUi().ButtonSet.OK);
@@ -627,6 +631,195 @@ function deleteExistingTriggers() {
 }
 
 // ══════════════════════════════════════════════
+// SYNC CHANNEL IDS FROM CLEARFEED COLLECTIONS
+// ══════════════════════════════════════════════
+
+function syncChannelIds() {
+  try {
+    const configErrors = validateConfig();
+    if (configErrors.length > 0) {
+      SpreadsheetApp.getUi().alert('Configuration Error', configErrors.join('\n'), SpreadsheetApp.getUi().ButtonSet.OK);
+      return;
+    }
+
+    const sheet = getSheet();
+
+    // Ensure Channel_ID and Channel_Name columns exist in the sheet
+    const data = sheet.getDataRange().getValues();
+    let headers = data.length > 0 ? data[0].map(h => String(h || '').trim()) : [];
+
+    let channelIdColIndex = headers.indexOf(CONFIG.CHANNEL_ID_COLUMN);
+    let channelNameColIndex = headers.indexOf(CONFIG.CHANNEL_NAME_COLUMN);
+    let collectionNameColIndex = headers.indexOf(CONFIG.COLLECTION_NAME_COLUMN);
+
+    // Add missing columns
+    const newHeaders = [];
+    if (channelIdColIndex === -1) {
+      newHeaders.push(CONFIG.CHANNEL_ID_COLUMN);
+    }
+    if (channelNameColIndex === -1) {
+      newHeaders.push(CONFIG.CHANNEL_NAME_COLUMN);
+    }
+    if (collectionNameColIndex === -1) {
+      newHeaders.push(CONFIG.COLLECTION_NAME_COLUMN);
+    }
+
+    if (newHeaders.length > 0) {
+      if (headers.length === 0) {
+        // Sheet is empty, set headers in row 1
+        sheet.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
+        headers = newHeaders;
+      } else {
+        // Append new columns after existing headers
+        const lastCol = headers.length;
+        sheet.getRange(1, lastCol + 1, 1, newHeaders.length).setValues([newHeaders]);
+        headers = headers.concat(newHeaders);
+      }
+
+      // Refresh column indices
+      channelIdColIndex = headers.indexOf(CONFIG.CHANNEL_ID_COLUMN);
+      channelNameColIndex = headers.indexOf(CONFIG.CHANNEL_NAME_COLUMN);
+      collectionNameColIndex = headers.indexOf(CONFIG.COLLECTION_NAME_COLUMN);
+    }
+
+    // Read existing channel IDs from sheet and build a map of row index → channel ID
+    const existingChannelIds = new Set();
+    const channelRowMap = {}; // channelId → row index in data array
+    for (let i = 1; i < data.length; i++) {
+      const channelId = String(data[i][channelIdColIndex] || '').trim();
+      if (channelId) {
+        existingChannelIds.add(channelId);
+        channelRowMap[channelId] = i;
+      }
+    }
+
+    Logger.log(`Found ${existingChannelIds.size} existing channel IDs in sheet`);
+
+    // Fetch all collections with channels
+    const allChannels = fetchAllChannelsFromCollections();
+
+    // Find missing channels and channels that need name updates
+    const missingChannels = [];
+    const updatedChannels = [];
+
+    allChannels.forEach(ch => {
+      if (!existingChannelIds.has(ch.id)) {
+        missingChannels.push(ch);
+      } else {
+        // Check if Channel_Name or Collection_Name needs updating
+        const rowIndex = channelRowMap[ch.id];
+        const currentName = String(data[rowIndex][channelNameColIndex] || '').trim();
+        const currentCollection = String(data[rowIndex][collectionNameColIndex] || '').trim();
+        const newName = ch.name || '';
+        const newCollection = ch.collectionName || '';
+
+        if (currentName !== newName || currentCollection !== newCollection) {
+          updatedChannels.push({ ...ch, rowIndex, oldName: currentName, oldCollection: currentCollection });
+        }
+      }
+    });
+
+    // Update existing rows with new names/collections
+    if (updatedChannels.length > 0) {
+      updatedChannels.forEach(ch => {
+        const row = ch.rowIndex + 1; // +1 to convert 0-based data array index to 1-based sheet row
+        if (channelNameColIndex >= 0) {
+          sheet.getRange(row, channelNameColIndex + 1).setValue(ch.name || '');
+        }
+        if (collectionNameColIndex >= 0) {
+          sheet.getRange(row, collectionNameColIndex + 1).setValue(ch.collectionName || '');
+        }
+      });
+      Logger.log(`Updated names for ${updatedChannels.length} existing channel(s)`);
+    }
+
+    // Append missing channels to the bottom of the sheet
+    if (missingChannels.length > 0) {
+      const lastRow = Math.max(sheet.getLastRow(), 1);
+      const newRows = missingChannels.map(ch => {
+        const row = new Array(headers.length).fill('');
+        row[channelIdColIndex] = ch.id;
+        row[channelNameColIndex] = ch.name;
+        row[collectionNameColIndex] = ch.collectionName || '';
+        return row;
+      });
+
+      sheet.getRange(lastRow + 1, 1, newRows.length, headers.length).setValues(newRows);
+      Logger.log(`Added ${missingChannels.length} new channel(s) to the sheet`);
+    }
+
+    if (missingChannels.length === 0 && updatedChannels.length === 0) {
+      SpreadsheetApp.getUi().alert('Download Channel IDs', 'All channels are already in the sheet and up to date.', SpreadsheetApp.getUi().ButtonSet.OK);
+      return;
+    }
+
+    const parts = [];
+    if (missingChannels.length > 0) {
+      parts.push(`Added ${missingChannels.length} new channel(s)`);
+    }
+    if (updatedChannels.length > 0) {
+      parts.push(`Updated names for ${updatedChannels.length} existing channel(s)`);
+    }
+
+    let message = parts.join(' and ') + '.';
+    if (missingChannels.length > 0) {
+      message += `\n\nNew channels:\n${missingChannels.slice(0, 10).map(ch => `${ch.name} (${ch.id})`).join('\n')}${missingChannels.length > 10 ? `\n... and ${missingChannels.length - 10} more` : ''}`;
+    }
+
+    SpreadsheetApp.getUi().alert('Download Channel IDs', message, SpreadsheetApp.getUi().ButtonSet.OK);
+
+  } catch (error) {
+    Logger.log(`Error syncing channel IDs: ${error}\n${error.stack}`);
+    SpreadsheetApp.getUi().alert('Error', `${error}`, SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+}
+
+/**
+ * Fetch all channels from all collections via the ClearFeed API
+ * Returns: Array of { id, name, collectionName }
+ */
+function fetchAllChannelsFromCollections() {
+  const allChannels = [];
+  let nextCursor = null;
+
+  while (true) {
+    let url = 'https://api.clearfeed.app/v1/rest/collections?include=channels';
+    if (nextCursor) {
+      url += '&next_cursor=' + nextCursor;
+    }
+
+    const response = UrlFetchApp.fetch(url, {
+      headers: { 'Authorization': `Bearer ${CONFIG.CLEARFEED_API_KEY}` },
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      throw new Error(`Collections API failed (${response.getResponseCode()}): ${response.getContentText()}`);
+    }
+
+    const data = JSON.parse(response.getContentText());
+    const collections = data.collections || [];
+
+    collections.forEach(collection => {
+      const collectionName = collection.name || '';
+      (collection.channels || []).forEach(ch => {
+        allChannels.push({
+          id: ch.id,
+          name: ch.name || '',
+          collectionName: collectionName
+        });
+      });
+    });
+
+    nextCursor = data.response_metadata?.next_cursor;
+    if (!nextCursor) break;
+  }
+
+  Logger.log(`Fetched ${allChannels.length} channels from ${allChannels.length > 0 ? 'collections' : 'collection'}`);
+  return allChannels;
+}
+
+// ══════════════════════════════════════════════
 // CLEARFEED API: CUSTOMERS (PAGINATED)
 // ══════════════════════════════════════════════
 
@@ -857,12 +1050,28 @@ function identifyAndValidateColumns(headers, customFieldNameToInfo) {
 }
 
 function getSheet() {
-  const ss = CONFIG.SPREADSHEET_ID
-    ? SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID)
-    : SpreadsheetApp.getActiveSpreadsheet();
+  let spreadsheet;
 
-  const sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
-  if (!sheet) throw new Error(`Sheet "${CONFIG.SHEET_NAME}" not found. Please create it with at least "${CONFIG.CHANNEL_ID_COLUMN}" column.`);
+  if (CONFIG.SPREADSHEET_ID && CONFIG.SPREADSHEET_ID !== "") {
+    spreadsheet = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  } else {
+    spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  }
+
+  // If there's only one sheet, use it regardless of name
+  const allSheets = spreadsheet.getSheets();
+  if (allSheets.length === 1) {
+    Logger.log(`Using the only sheet in the spreadsheet: "${allSheets[0].getName()}"`);
+    return allSheets[0];
+  }
+
+  // Otherwise, look for the sheet by name
+  const sheet = spreadsheet.getSheetByName(CONFIG.SHEET_NAME);
+
+  if (!sheet) {
+    throw new Error(`Sheet "${CONFIG.SHEET_NAME}" not found. Please create it with at least "${CONFIG.CHANNEL_ID_COLUMN}" column.`);
+  }
+
   return sheet;
 }
 
@@ -1007,15 +1216,14 @@ function sanitizeByType(value, cfInfo, columnName = '') {
 
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu('🔵 ClearFeed Mapper')
-    .addItem('⬆️  Sync Custom Fields → ClearFeed', 'syncCustomFieldsFromSheet')
-    .addItem('🔍 Dry Run (Preview Changes)', 'syncDryRun')
+    .createMenu('ClearFeed Customer Field Sync')
+    .addItem('Download Channel IDs', 'syncChannelIds')
+    .addItem('Sync Custom Fields', 'syncCustomFieldsFromSheet')
+    .addItem('Sync Custom Fields (Dry Run)', 'syncDryRun')
     .addSeparator()
-    .addItem('🔌 Test Connection', 'testConnection')
+    .addItem('Test Connection', 'testConnection')
     .addSeparator()
     .addItem('⏰ Enable Hourly Sync', 'enableHourlySync')
     .addItem('🛑 Disable Hourly Sync', 'disableHourlySync')
-    .addSeparator()
-    .addItem('⚠️  Force Sync (Skip Validation)', 'forceSync')
     .addToUi();
 }
