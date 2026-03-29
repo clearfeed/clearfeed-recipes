@@ -1,6 +1,6 @@
 # Customer Custom Fields Sync
 
-A Google Apps Script integration that syncs customer custom field values from a Google Sheet to ClearFeed customers via the ClearFeed REST API.
+A Google Apps Script integration that downloads channel data from ClearFeed and allows users to maintain the custom fields associated with those channels (ie. the corresponding customers) and sync customer custom field values from a Google Sheet to ClearFeed customers these fields back to ClearFeed via the ClearFeed REST API.
 
 ## Overview
 
@@ -40,12 +40,13 @@ Before using this integration:
 
 Create a sheet with the following structure:
 
-| Collection_Name | Channel_ID | Channel_Name | Custom Field 1 | Custom Field 2 | ... |
-|----------------|------------|--------------|----------------|----------------|-----|
-| My Collection  | C04TCQTRMT3 | my-channel   | Value 1        | Value 2        | ... |
+| Collection_Name | Channel_ID | Channel_Name | Channel_Active | Custom Field 1 | Custom Field 2 | ... |
+|----------------|------------|--------------|-----------------|----------------|----------------|-----|
+| My Collection  | C04TCQTRMT3 | my-channel   | active          | Value 1        | Value 2        | ... |
 
 - **Channel_ID column**: Required - contains the Slack Channel ID for each customer. Use "Download Channel IDs" from the menu to auto-populate this column.
 - **Channel_Name column**: Auto-populated by "Download Channel IDs" — shows the channel name for reference.
+- **Channel_Active column**: Auto-populated by "Download Channel IDs" — shows whether the channel is active or inactive.
 - **Collection_Name column**: Auto-populated by "Download Channel IDs" — shows the collection the channel belongs to.
 - **Other columns**: Must match your ClearFeed custom field names exactly
 
@@ -68,8 +69,9 @@ const CONFIG = {
   SPREADSHEET_ID:        "",                      // Optional: for standalone script
   CHANNEL_ID_COLUMN:     "Channel_ID",            // Column name for Channel ID
   CHANNEL_NAME_COLUMN:   "Channel_Name",          // Column name for Channel Name (populated by Download Channel IDs)
+  CHANNEL_ACTIVE_COLUMN: "Channel_Active",        // Column name for Channel Active status (populated by Download Channel IDs)
   COLLECTION_NAME_COLUMN: "Collection_Name",      // Column name for Collection Name (populated by Download Channel IDs)
-  SKIP_COLUMNS:          ["Collection_Name", "Channel_ID", "Channel_Name"],
+  SKIP_COLUMNS:          ["Collection_Name", "Channel_ID", "Channel_Name", "Channel_Active"],
   MULTI_SELECT_DELIM:    "|",                     // Multi-select value delimiter
   // ... other settings
 };
@@ -88,7 +90,7 @@ const CONFIG = {
 
 The typical workflow for using this integration:
 
-1. **Download Channel IDs** — Fetch all channels from your ClearFeed collections. This automatically creates `Channel_ID`, `Channel_Name`, and `Collection_Name` columns and populates them with your channels.
+1. **Download Channel IDs** — Fetch all channels from your ClearFeed collections. This automatically creates `Channel_ID`, `Channel_Name`, `Channel_Active`, and `Collection_Name` columns and populates them with your channels.
 2. **Add Custom Field Columns** — Add new columns to your sheet for each customer custom field you want to manage. Column names must match your ClearFeed custom field names exactly.
 3. **Fill in Values** — Enter the custom field values for each channel row.
 4. **Sync Custom Fields** — Run "Sync Custom Fields" to push the values to ClearFeed customers.
@@ -96,7 +98,7 @@ The typical workflow for using this integration:
 
 ### Menu Options
 
-After installing, a **"ClearFeed Customer Field Sync"** menu will appear with these options:
+After installing, a **"ClearFeed Data Sync"** menu will appear with these options:
 
 | Option | Description |
 |--------|-------------|
@@ -104,16 +106,16 @@ After installing, a **"ClearFeed Customer Field Sync"** menu will appear with th
 | **Sync Custom Fields** | Perform the sync with validation. Updates customer records in ClearFeed with values from the sheet. |
 | **Sync Custom Fields (Dry Run)** | Preview changes without applying them. Shows what would be updated if you ran the sync. |
 | **Test Connection** | Verify API credentials and sheet access |
-| **Enable Hourly Sync** | Set up automatic hourly sync trigger |
-| **Disable Hourly Sync** | Remove automatic sync trigger |
+| **Enable Periodic Sync** | Set up automatic sync trigger (runs every N hours, configurable via TRIGGER_INTERVAL_HR) |
+| **Disable Periodic Sync** | Remove automatic sync trigger |
 
 ### Download Channel IDs Process
 
 When you run **Download Channel IDs**:
 
 1. **Fetch Collections** — Retrieves all collections from ClearFeed with their channels
-2. **Create Columns** — If `Channel_ID`, `Channel_Name`, or `Collection_Name` columns don't exist, they are created automatically
-3. **Update Existing** — For channels already in the sheet, updates `Channel_Name` and `Collection_Name` if they've changed
+2. **Create Columns** — If `Channel_ID`, `Channel_Name`, `Channel_Active`, or `Collection_Name` columns don't exist, they are created automatically
+3. **Update Existing** — For channels already in the sheet, updates `Channel_Name`, `Channel_Active`, and `Collection_Name` if they've changed
 4. **Add New** — Appends any new channels to the bottom of the sheet
 
 ### Sync Custom Fields Process
@@ -138,13 +140,13 @@ When you run **Sync Custom Fields**:
 | `SPREADSHEET_ID` | For standalone scripts | Optional |
 | `CHANNEL_ID_COLUMN` | Name of Channel ID column | "Channel_ID" |
 | `CHANNEL_NAME_COLUMN` | Name of Channel Name column (populated by Download Channel IDs) | "Channel_Name" |
+| `CHANNEL_ACTIVE_COLUMN` | Name of Channel Active column (populated by Download Channel IDs) | "Channel_Active" |
 | `COLLECTION_NAME_COLUMN` | Name of Collection Name column (populated by Download Channel IDs) | "Collection_Name" |
-| `SKIP_COLUMNS` | Columns to ignore during sync | ["Collection_Name", "Channel_ID", "Channel_Name"] |
+| `SKIP_COLUMNS` | Columns to ignore during sync | ["Collection_Name", "Channel_ID", "Channel_Name", "Channel_Active"] |
 | `MULTI_SELECT_DELIM` | Multi-select value separator | "\|" |
 | `BASE_DELAY_MS` | Delay between API calls | 200 |
 | `MAX_RETRIES` | Retry attempts for failed requests | 5 |
 | `MAX_UPDATES_PER_RUN` | Maximum customers per sync | 500 |
-| `DRY_RUN_DEFAULT` | Default dry run mode | false |
 | `ALLOWED_FIELD_TYPES` | Supported custom field types | ["text", "select", "multi_select", "number", "date"] |
 | `STRICT_VALIDATION` | Stop sync on validation errors | true |
 

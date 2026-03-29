@@ -17,16 +17,16 @@ const CONFIG = {
   SHEET_NAME:            "Collections & Customers", // Name of the sheet tab (only used if spreadsheet has multiple sheets)
   SPREADSHEET_ID:        "",                       // Leave empty to use current spreadsheet
   CHANNEL_ID_COLUMN:     "Channel_ID",            // Configurable column name for Channel ID
-  CHANNEL_NAME_COLUMN:   "Channel_Name",          // Column name for Channel Name (populated by Sync Channel IDs)
+  CHANNEL_NAME_COLUMN:   "Channel_Name",          // Column name for Channel Name (populated by Download Channel IDs)
+  CHANNEL_ACTIVE_COLUMN: "Channel_Active",        // Column name for Channel Active status (populated by Download Channel IDs)
   COLLECTION_NAME_COLUMN: "Collection_Name",      // Column name for Collection Name
-  SKIP_COLUMNS:          ["Collection_Name", "Channel_ID", "Channel_Name"],       // Auto-synced with CHANNEL_ID_COLUMN
+  SKIP_COLUMNS:          ["Collection_Name", "Channel_ID", "Channel_Name", "Channel_Active"],       // Auto-synced with CHANNEL_ID_COLUMN
   MULTI_SELECT_DELIM:    "|",                  // Delimiter for separating multi-select values (default: pipe character)
-  BASE_DELAY_MS:         200,                  // Reduced from 500ms for faster processing
-  MAX_RETRIES:           5,
-  MAX_UPDATES_PER_RUN:   500,                  // Increased from 100 - processes entire sheet at once
+  BASE_DELAY_MS:         200,                  // Delay between API calls
+  MAX_RETRIES:           5,                     // Retry attempts for failed requests
+  MAX_UPDATES_PER_RUN:   500,                  // Maximum customers per sync
   TRIGGER_FUNCTION:      "syncCustomFieldsFromSheet",
-  TRIGGER_INTERVAL_HR:   1,
-  DRY_RUN_DEFAULT:       false,                // Set to true for testing without updates
+  TRIGGER_INTERVAL_HR:   1,                     // Sync trigger interval (hours)
   PROGRESS_UPDATE_INTERVAL: 25,                // Show progress every N rows (for large datasets)
 
   // Validation Settings
@@ -53,7 +53,7 @@ function validateConfig() {
   // Auto-sync SKIP_COLUMNS with configurable column names (use global const to avoid mutating CONFIG)
   if (!globalSkipColumns) {
     globalSkipColumns = [...CONFIG.SKIP_COLUMNS];
-    [CONFIG.CHANNEL_ID_COLUMN, CONFIG.CHANNEL_NAME_COLUMN, CONFIG.COLLECTION_NAME_COLUMN].forEach(col => {
+    [CONFIG.CHANNEL_ID_COLUMN, CONFIG.CHANNEL_NAME_COLUMN, CONFIG.CHANNEL_ACTIVE_COLUMN, CONFIG.COLLECTION_NAME_COLUMN].forEach(col => {
       if (col && !globalSkipColumns.includes(col)) {
         globalSkipColumns.push(col);
       }
@@ -69,7 +69,7 @@ function validateConfig() {
 
 function syncCustomFieldsFromSheet(dryRun = null) {
   const startTime = new Date();
-  dryRun = dryRun !== null ? dryRun : CONFIG.DRY_RUN_DEFAULT;
+  dryRun = dryRun !== null ? dryRun : false;
 
   try {
     // Validate configuration
@@ -583,7 +583,7 @@ function testConnection() {
 }
 
 // ══════════════════════════════════════════════
-// ENABLE HOURLY SYNC TRIGGER
+// ENABLE PERIODIC SYNC TRIGGER
 // ══════════════════════════════════════════════
 
 function enableHourlySync() {
@@ -594,24 +594,24 @@ function enableHourlySync() {
     .everyHours(CONFIG.TRIGGER_INTERVAL_HR)
     .create();
 
-  Logger.log(`✅ Hourly sync enabled`);
+  Logger.log(`✅ Periodic sync enabled (every ${CONFIG.TRIGGER_INTERVAL_HR} hour(s))`);
   SpreadsheetApp.getUi().alert(
-    '✅ Hourly Sync Enabled',
-    `Sync will run automatically every ${CONFIG.TRIGGER_INTERVAL_HR} hour(s).\n\nUse "Disable Hourly Sync" to stop it.`,
+    '✅ Periodic Sync Enabled',
+    `Sync will run automatically every ${CONFIG.TRIGGER_INTERVAL_HR} hour(s).\n\nUse "Disable Periodic Sync" to stop it.`,
     SpreadsheetApp.getUi().ButtonSet.OK
   );
 }
 
 // ══════════════════════════════════════════════
-// DISABLE HOURLY SYNC TRIGGER
+// DISABLE PERIODIC SYNC TRIGGER
 // ══════════════════════════════════════════════
 
 function disableHourlySync() {
   const deleted = deleteExistingTriggers();
 
-  Logger.log(`🛑 Hourly sync disabled. ${deleted} trigger(s) removed.`);
+  Logger.log(`🛑 Periodic sync disabled. ${deleted} trigger(s) removed.`);
   SpreadsheetApp.getUi().alert(
-    '🛑 Hourly Sync Disabled',
+    '🛑 Periodic Sync Disabled',
     deleted > 0
       ? `${deleted} trigger(s) removed. Sync will no longer run automatically.`
       : 'No active triggers found — nothing to disable.',
@@ -644,12 +644,13 @@ function syncChannelIds() {
 
     const sheet = getSheet();
 
-    // Ensure Channel_ID and Channel_Name columns exist in the sheet
+    // Ensure Channel_ID, Channel_Name, Channel_Active and Collection_Name columns exist in the sheet
     const data = sheet.getDataRange().getValues();
     let headers = data.length > 0 ? data[0].map(h => String(h || '').trim()) : [];
 
     let channelIdColIndex = headers.indexOf(CONFIG.CHANNEL_ID_COLUMN);
     let channelNameColIndex = headers.indexOf(CONFIG.CHANNEL_NAME_COLUMN);
+    let channelActiveColIndex = headers.indexOf(CONFIG.CHANNEL_ACTIVE_COLUMN);
     let collectionNameColIndex = headers.indexOf(CONFIG.COLLECTION_NAME_COLUMN);
 
     // Add missing columns
@@ -659,6 +660,9 @@ function syncChannelIds() {
     }
     if (channelNameColIndex === -1) {
       newHeaders.push(CONFIG.CHANNEL_NAME_COLUMN);
+    }
+    if (channelActiveColIndex === -1) {
+      newHeaders.push(CONFIG.CHANNEL_ACTIVE_COLUMN);
     }
     if (collectionNameColIndex === -1) {
       newHeaders.push(CONFIG.COLLECTION_NAME_COLUMN);
@@ -679,6 +683,7 @@ function syncChannelIds() {
       // Refresh column indices
       channelIdColIndex = headers.indexOf(CONFIG.CHANNEL_ID_COLUMN);
       channelNameColIndex = headers.indexOf(CONFIG.CHANNEL_NAME_COLUMN);
+      channelActiveColIndex = headers.indexOf(CONFIG.CHANNEL_ACTIVE_COLUMN);
       collectionNameColIndex = headers.indexOf(CONFIG.COLLECTION_NAME_COLUMN);
     }
 
@@ -695,8 +700,16 @@ function syncChannelIds() {
 
     Logger.log(`Found ${existingChannelIds.size} existing channel IDs in sheet`);
 
+    // Fetch all customers to get channel IDs associated with customers
+    const customerChannelIds = fetchCustomerChannelIds();
+    Logger.log(`Found ${customerChannelIds.size} channels associated with customers`);
+
     // Fetch all collections with channels
-    const allChannels = fetchAllChannelsFromCollections();
+    const collectionChannels = fetchAllChannelsFromCollections();
+
+    // Filter to only channels that are associated with customers
+    const allChannels = collectionChannels.filter(ch => customerChannelIds.has(ch.id));
+    Logger.log(`Matched ${allChannels.length} collection channels to customer channels`);
 
     // Find missing channels and channels that need name updates
     const missingChannels = [];
@@ -706,31 +719,36 @@ function syncChannelIds() {
       if (!existingChannelIds.has(ch.id)) {
         missingChannels.push(ch);
       } else {
-        // Check if Channel_Name or Collection_Name needs updating
+        // Check if Channel_Name, Channel_Active, or Collection_Name needs updating
         const rowIndex = channelRowMap[ch.id];
         const currentName = String(data[rowIndex][channelNameColIndex] || '').trim();
+        const currentActive = String(data[rowIndex][channelActiveColIndex] || '').trim();
         const currentCollection = String(data[rowIndex][collectionNameColIndex] || '').trim();
         const newName = ch.name || '';
+        const newActive = ch.active || '';
         const newCollection = ch.collectionName || '';
 
-        if (currentName !== newName || currentCollection !== newCollection) {
-          updatedChannels.push({ ...ch, rowIndex, oldName: currentName, oldCollection: currentCollection });
+        if (currentName !== newName || currentActive !== newActive || currentCollection !== newCollection) {
+          updatedChannels.push({ ...ch, rowIndex, oldName: currentName, oldActive: currentActive, oldCollection: currentCollection });
         }
       }
     });
 
-    // Update existing rows with new names/collections
+    // Update existing rows with new names/active status/collections
     if (updatedChannels.length > 0) {
       updatedChannels.forEach(ch => {
         const row = ch.rowIndex + 1; // +1 to convert 0-based data array index to 1-based sheet row
         if (channelNameColIndex >= 0) {
           sheet.getRange(row, channelNameColIndex + 1).setValue(ch.name || '');
         }
+        if (channelActiveColIndex >= 0) {
+          sheet.getRange(row, channelActiveColIndex + 1).setValue(ch.active || '');
+        }
         if (collectionNameColIndex >= 0) {
           sheet.getRange(row, collectionNameColIndex + 1).setValue(ch.collectionName || '');
         }
       });
-      Logger.log(`Updated names for ${updatedChannels.length} existing channel(s)`);
+      Logger.log(`Updated details for ${updatedChannels.length} existing channel(s)`);
     }
 
     // Append missing channels to the bottom of the sheet
@@ -740,6 +758,7 @@ function syncChannelIds() {
         const row = new Array(headers.length).fill('');
         row[channelIdColIndex] = ch.id;
         row[channelNameColIndex] = ch.name;
+        row[channelActiveColIndex] = ch.active || '';
         row[collectionNameColIndex] = ch.collectionName || '';
         return row;
       });
@@ -775,6 +794,41 @@ function syncChannelIds() {
 }
 
 /**
+ * Fetch all channel IDs that are associated with customers
+ * Returns: Set of channel ID strings
+ */
+function fetchCustomerChannelIds() {
+  const channelIds = new Set();
+  let nextCursor = null;
+
+  while (true) {
+    const url = `https://api.clearfeed.app/v1/rest/customers?limit=100${nextCursor ? '&next_cursor=' + nextCursor : ''}`;
+
+    const response = UrlFetchApp.fetch(url, {
+      headers: { 'Authorization': `Bearer ${CONFIG.CLEARFEED_API_KEY}` },
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      Logger.log(`Customers API error (${response.getResponseCode()}): ${response.getContentText()}`);
+      break;
+    }
+
+    const data = JSON.parse(response.getContentText());
+    (data.customers || []).forEach(customer => {
+      (customer.channel_ids || []).forEach(chId => {
+        channelIds.add(String(chId).trim());
+      });
+    });
+
+    nextCursor = data.response_metadata?.next_cursor;
+    if (!nextCursor) break;
+  }
+
+  return channelIds;
+}
+
+/**
  * Fetch all channels from all collections via the ClearFeed API
  * Returns: Array of { id, name, collectionName }
  */
@@ -806,6 +860,7 @@ function fetchAllChannelsFromCollections() {
         allChannels.push({
           id: ch.id,
           name: ch.name || '',
+          active: ch.status || '',
           collectionName: collectionName
         });
       });
@@ -1216,14 +1271,14 @@ function sanitizeByType(value, cfInfo, columnName = '') {
 
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu('ClearFeed Customer Field Sync')
+    .createMenu('ClearFeed Data Sync')
     .addItem('Download Channel IDs', 'syncChannelIds')
     .addItem('Sync Custom Fields', 'syncCustomFieldsFromSheet')
     .addItem('Sync Custom Fields (Dry Run)', 'syncDryRun')
     .addSeparator()
     .addItem('Test Connection', 'testConnection')
     .addSeparator()
-    .addItem('⏰ Enable Hourly Sync', 'enableHourlySync')
-    .addItem('🛑 Disable Hourly Sync', 'disableHourlySync')
+    .addItem('⏰ Enable Periodic Sync', 'enableHourlySync')
+    .addItem('🛑 Disable Periodic Sync', 'disableHourlySync')
     .addToUi();
 }
