@@ -238,7 +238,8 @@ function syncCustomFieldsFromSheet(dryRun = null) {
           customer: customerName || 'Unknown',
           changes: rowChanges
         });
-        Logger.log(`🔍 [DRY RUN] Row ${i + 2}: "${customerName}" (${channelId}) → ${rowChanges.join(', ')}`);
+        Logger.log(`🔍 [DRY RUN] Row ${i + 2}: "${customerName}" (${channelId})`);
+        rowChanges.forEach(change => Logger.log(`   ${change}`));
         continue;
       }
 
@@ -246,7 +247,8 @@ function syncCustomFieldsFromSheet(dryRun = null) {
       const updateResult = updateCustomerWithRetry(customerId, customerVersion, customFieldValues);
 
       if (updateResult.success) {
-        Logger.log(`✅ "${customerName}" (${channelId} v${customerVersion}) → ${rowChanges.join(', ')}`);
+        Logger.log(`✅ "${customerName}" (${channelId} v${customerVersion})`);
+        rowChanges.forEach(change => Logger.log(`   ${change}`));
         results.success++;
         // Track changes for summary
         changes.push({
