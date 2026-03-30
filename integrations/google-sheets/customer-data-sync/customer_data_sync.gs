@@ -14,7 +14,7 @@ let globalSkipColumns = null;
 
 const CONFIG = {
   CLEARFEED_API_KEY:     "PAT_USER_TOKEN",
-  SHEET_NAME:            "Collections & Customers", // Name of the sheet tab (only used if spreadsheet has multiple sheets)
+  SHEET_NAME:            "Customers", // Name of the sheet tab (only used if spreadsheet has multiple sheets)
   SPREADSHEET_ID:        "",                       // Leave empty to use current spreadsheet
   CHANNEL_ID_COLUMN:     "Channel_ID",            // Configurable column name for Channel ID
   CHANNEL_NAME_COLUMN:   "Channel_Name",          // Column name for Channel Name (populated by Download Channel IDs)
@@ -116,7 +116,7 @@ function syncCustomFieldsFromSheet(dryRun = null) {
 
     // Flag error for unmapped columns (excluding skipped columns)
     if (unmatchedColumns.length > 0) {
-      const errorMsg = `The following sheet columns do not match any ClearFeed customer custom fields:\n\n${unmatchedColumns.join(', ')}\n\nPlease either:\n- Rename the columns to match exact custom field names in ClearFeed\n- Add these as new custom fields in ClearFeed\n- Or remove these columns from the sheet`;
+      const errorMsg = `The following sheet columns do not match any ClearFeed customer custom fields:\n\n${unmatchedColumns.join(', ')}\n\nPlease either:\n- Rename the columns to match exact custom field names in ClearFeed\n- Add these as new custom fields in ClearFeed\n- Add the column names to SKIP_COLUMNS in the app script configuration\n- Or remove these columns from the sheet`;
 
       SpreadsheetApp.getUi().alert(
         '⚠️ Unmatched Columns Found',
