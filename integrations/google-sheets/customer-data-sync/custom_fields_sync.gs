@@ -968,10 +968,27 @@ function buildChannelIdCustomerMap() {
   while (true) {
     const url = `https://api.clearfeed.app/v1/rest/customers?limit=100${nextCursor ? '&next_cursor=' + nextCursor : ''}`;
 
-    const response = UrlFetchApp.fetch(url, {
-      headers: { 'Authorization': `Bearer ${CONFIG.CLEARFEED_API_KEY}` },
-      muteHttpExceptions: true
-    });
+    let response;
+    let delayMs = CONFIG.BASE_DELAY_MS;
+
+    for (let attempt = 1; attempt <= CONFIG.MAX_RETRIES; attempt++) {
+      try {
+        response = UrlFetchApp.fetch(url, {
+          headers: { 'Authorization': `Bearer ${CONFIG.CLEARFEED_API_KEY}` },
+          muteHttpExceptions: true
+        });
+        break; // Success, exit retry loop
+      } catch (e) {
+        if (String(e).indexOf('Bandwidth quota') !== -1 || String(e).indexOf('quota exceeded') !== -1) {
+          Logger.log(`⏳ Bandwidth quota exceeded fetching customers (attempt ${attempt}/${CONFIG.MAX_RETRIES}), waiting ${delayMs}ms...`);
+          Utilities.sleep(delayMs);
+          delayMs *= 2;
+          if (attempt === CONFIG.MAX_RETRIES) throw e;
+        } else {
+          throw e;
+        }
+      }
+    }
 
     if (response.getResponseCode() !== 200) break;
 
@@ -1007,6 +1024,7 @@ function buildChannelIdCustomerMap() {
 
     nextCursor = data.response_metadata?.next_cursor;
     if (!nextCursor) break;
+    Utilities.sleep(CONFIG.BASE_DELAY_MS);
   }
 
   if (customersWithoutChannels > 0) {
@@ -1092,7 +1110,7 @@ function identifyAndValidateColumns(headers, customFieldNameToInfo) {
   const unmatched = [];
 
   headers.forEach(header => {
-    if (globalSkipColumns.includes(header)) return;
+    if (!header || globalSkipColumns.includes(header)) return;
 
     if (customFieldNameToInfo[header]) {
       matched[header] = customFieldNameToInfo[header];
