@@ -353,14 +353,14 @@ function buildSummary(results, totalRows, dryRun, duration, validationErrors, ch
 
   const logMessage = summaryParts.join(' | ');
 
-  let alertTitle = dryRun ? '🔍 Dry Run Results' : 'Sync Complete';
-  let alertMessage = summaryParts.join(' | ');
-
-  // Add performance note for large datasets
+  // Add performance note to log for large datasets
   if (totalRows > 100) {
     const avgTimePerRow = (duration / totalProcessed).toFixed(2);
-    alertMessage += `\n\n📊 Performance: ${avgTimePerRow}s per row average`;
+    logMessage += `\n📊 Performance: ${avgTimePerRow}s per row average`;
   }
+
+  let alertTitle = dryRun ? '🔍 Dry Run Results' : 'Sync Complete';
+  let alertMessage = summaryParts.join(' | ');
 
   // Add warnings to alert
   if (warnings.length > 0) {
