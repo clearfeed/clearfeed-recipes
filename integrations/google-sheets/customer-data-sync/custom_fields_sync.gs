@@ -199,10 +199,10 @@ function syncCustomFieldsFromSheet(dryRun = null) {
 
         const existingValue = existingCFValues[cfInfo.id];
 
-        // Empty cell — only skip if there's nothing to preserve either
+        // Empty cell — skip if ClearFeed also has no value, otherwise clear it
         if (sanitized === null) {
           if (existingValue !== undefined && existingValue !== null) {
-            customFieldValues[cfInfo.id] = existingValue;
+            rowChanges.push(`"${colHeader}": "${existingValue}" → (empty)`);
           }
           return;
         }
@@ -224,7 +224,7 @@ function syncCustomFieldsFromSheet(dryRun = null) {
       });
 
       // Nothing changed for this customer — skip PATCH entirely
-      if (Object.keys(customFieldValues).length === 0) {
+      if (rowChanges.length === 0) {
         results.unchanged++;
         continue;
       }
@@ -1155,7 +1155,10 @@ function readSheet(sheet) {
 
   for (let i = 1; i < data.length; i++) {
     const row = {};
-    headers.forEach((header, j) => { row[header] = data[i][j] ?? ''; });
+    headers.forEach((header, j) => {
+      if (!header) return; // Skip columns with empty headers
+      row[header] = data[i][j] ?? '';
+    });
     if (Object.values(row).every(v => v === '' || v === null)) continue;
     rows.push(row);
   }
