@@ -1,4 +1,4 @@
-# Customer Custom Fields Sync
+# Customer Data Sync
 
 A Google Apps Script integration that downloads channel data from ClearFeed and allows users to maintain the custom fields associated with those channels (ie. the corresponding customers) and sync customer custom field values from a Google Sheet to ClearFeed customers these fields back to ClearFeed via the ClearFeed REST API.
 
@@ -54,7 +54,7 @@ Create a sheet with the following structure:
 
 1. Open your Google Sheet
 2. Go to **Extensions > Apps Script**
-3. Copy the contents of `custom_fields_sync.gs`
+3. Copy the contents of `customer_data_sync.gs`
 4. Paste into the script editor
 5. Save the project
 
