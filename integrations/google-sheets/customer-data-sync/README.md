@@ -36,53 +36,72 @@ Before using this integration:
 
 ## Setup
 
-### 1. Google Sheet Structure
+Follow these steps to set up the integration:
 
-Create a sheet with the following structure:
-
-| Collection_Name | Channel_ID | Channel_Name | Channel_Active | Custom Field 1 | Custom Field 2 | ... |
-|----------------|------------|--------------|-----------------|----------------|----------------|-----|
-| My Collection  | C04TCQTRMT3 | my-channel   | active          | Value 1        | Value 2        | ... |
-
-- **Channel_ID column**: Required - contains the Slack Channel ID for each customer. Use "Download Channel IDs" from the menu to auto-populate this column.
-- **Channel_Name column**: Auto-populated by "Download Channel IDs" — shows the channel name for reference.
-- **Channel_Active column**: Auto-populated by "Download Channel IDs" — shows whether the channel is active or inactive.
-- **Collection_Name column**: Auto-populated by "Download Channel IDs" — shows the collection the channel belongs to.
-- **Other columns**: Must match your ClearFeed custom field names exactly
-
-### 2. Install the Script
+### 1. Install the Script
 
 1. Open your Google Sheet
 2. Go to **Extensions > Apps Script**
 3. Copy the contents of `customer_data_sync.gs`
 4. Paste into the script editor
 5. Save the project
+6. **Refresh your Google Sheet** — a **"ClearFeed Data Sync"** menu will appear
 
-### 3. Configure
+### 2. Get Your ClearFeed PAT Token
 
-Edit the `CONFIG` object at the top of the script:
+1. Log in to ClearFeed
+2. Navigate to **Settings > API**
+3. Generate a PAT (Personal Access Token)
+
+### 3. Configure the Script
+
+Edit the `CONFIG` object at the top of the script and paste your PAT token:
 
 ```javascript
 const CONFIG = {
   CLEARFEED_API_KEY:     "your-pat-token-here",  // Your ClearFeed PAT token
-  SHEET_NAME:            "Sheet1",                // Optional: Name of the sheet tab (only used if spreadsheet has multiple sheets)
-  SPREADSHEET_ID:        "",                      // Optional: for standalone script
+  SHEET_NAME:            "Customers",             // Name of the sheet tab
+  SPREADSHEET_ID:        "",                      // Leave empty to use current spreadsheet
   CHANNEL_ID_COLUMN:     "Channel_ID",            // Column name for Channel ID
   CHANNEL_NAME_COLUMN:   "Channel_Name",          // Column name for Channel Name (populated by Download Channel IDs)
   CHANNEL_ACTIVE_COLUMN: "Channel_Active",        // Column name for Channel Active status (populated by Download Channel IDs)
   COLLECTION_NAME_COLUMN: "Collection_Name",      // Column name for Collection Name (populated by Download Channel IDs)
-  SKIP_COLUMNS:          ["Collection_Name", "Channel_ID", "Channel_Name", "Channel_Active"],
+  SKIP_COLUMNS:          ["Collection_Name", "Channel_ID", "Channel_Name", "Channel_Active"],  // Columns to ignore during sync
   MULTI_SELECT_DELIM:    "|",                     // Multi-select value delimiter
   // ... other settings
 };
 ```
 
-### 4. Get Your ClearFeed API Key
+### 4. (Optional) Download Channel IDs
 
-1. Log in to ClearFeed
-2. Navigate to Settings > API
-3. Generate a PAT (Personal Access Token)
-4. Paste it into `CONFIG.CLEARFEED_API_KEY`
+Run **"Download Channel IDs"** from the menu to automatically populate channel data:
+
+- Creates `Channel_ID`, `Channel_Name`, `Channel_Active`, and `Collection_Name` columns if they don't exist
+- Fetches all channels from your ClearFeed collections
+- Adds new channels and updates existing channel names
+
+**If you skip this step**, you must manually create a `Channel_ID` column and enter Slack Channel IDs (e.g., "C04TCQTRMT3") for each customer.
+
+### 5. Add Custom Field Columns
+
+Add columns to your sheet for each customer custom field you want to manage:
+
+- **Column names must match your ClearFeed custom field names exactly** (case-sensitive)
+- The script will automatically match columns to ClearFeed custom fields
+
+**To exclude certain columns from sync**, add them to `SKIP_COLUMNS` in the CONFIG:
+
+```javascript
+SKIP_COLUMNS: ["Collection_Name", "Channel_ID", "Channel_Name", "Channel_Active", "Internal_Notes"],
+```
+
+Example sheet structure:
+
+| Collection_Name | Channel_ID | Channel_Name | Channel_Active | Custom Field 1 | Custom Field 2 |
+|:---------------:|:----------:|:------------:|:--------------:|:--------------:|:--------------:|
+| *(Optional)*    | **Required** | *(Optional)* | *(Optional)*    | Value 1        | Value 2        |
+
+> **Note**: Only the `Channel_ID` column is compulsory. The `Collection_Name`, `Channel_Name`, and `Channel_Active` columns are optional and can be omitted if not needed.
 
 ## Usage
 
