@@ -155,6 +155,7 @@ function syncCustomFieldsFromSheet(dryRun = null) {
     const results = { success: 0, skipped: 0, failed: 0, unchanged: 0, processed: 0, validationErrors: 0, versionConflicts: 0 };
     const validationErrors = [];
     const changes = []; // Track changes for dry run
+    let clearedFieldsCount = 0; // Track fields that will be cleared (empty cell, non-empty ClearFeed value)
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
@@ -203,6 +204,7 @@ function syncCustomFieldsFromSheet(dryRun = null) {
         if (sanitized === null) {
           if (existingValue !== undefined && existingValue !== null) {
             rowChanges.push(`"${colHeader}": "${existingValue}" → (empty)`);
+            clearedFieldsCount++;
           }
           return;
         }
@@ -274,7 +276,7 @@ function syncCustomFieldsFromSheet(dryRun = null) {
     const duration = Math.round((endTime - startTime) / 1000);
 
     // Build summary (include warnings if any)
-    const summary = buildSummary(results, rows.length, dryRun, duration, validationErrors, changes, warnings);
+    const summary = buildSummary(results, rows.length, dryRun, duration, validationErrors, changes, warnings, clearedFieldsCount);
 
     Logger.log(summary.logMessage);
 
@@ -322,7 +324,7 @@ function forceSync() {
 // BUILD SUMMARY MESSAGE
 // ══════════════════════════════════════════════
 
-function buildSummary(results, totalRows, dryRun, duration, validationErrors, changes, warnings = []) {
+function buildSummary(results, totalRows, dryRun, duration, validationErrors, changes, warnings = [], clearedFieldsCount = 0) {
   const totalProcessed = results.processed + results.unchanged + results.skipped;
   const successRate = totalProcessed > 0 ? Math.round((results.success / totalProcessed) * 100) : 0;
 
@@ -376,6 +378,14 @@ function buildSummary(results, totalRows, dryRun, duration, validationErrors, ch
     if (validationErrors.length > 10) {
       alertMessage += `\n... and ${validationErrors.length - 10} more errors (check logs)`;
     }
+  }
+
+  // Add prominent cleared fields warning for dry run
+  if (dryRun && clearedFieldsCount > 0) {
+    alertMessage += '\n\n════════════════════════════════════════\n';
+    alertMessage += `⚠️ ${clearedFieldsCount} field value(s) will be CLEARED from ClearFeed\n`;
+    alertMessage += '(empty sheet cells will delete existing ClearFeed values)\n';
+    alertMessage += '════════════════════════════════════════';
   }
 
   // Show sample changes for both dry run and regular sync

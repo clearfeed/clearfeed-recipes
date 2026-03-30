@@ -92,6 +92,13 @@ The typical workflow for using this integration:
 4. **Sync Custom Fields** — Run "Sync Custom Fields" to push the values to ClearFeed customers.
 5. **Repeat** — As new channels are added to ClearFeed, run "Download Channel IDs" again to add them to the sheet, then fill in their values and sync.
 
+---
+
+> ### ⚠️ **IMPORTANT: ALWAYS RUN DRY RUN FIRST**
+> **Before running "Sync Custom Fields" for the first time or after making significant changes, ALWAYS run "Sync Custom Fields (Dry Run)" first to preview the changes.** This will show you exactly what will be updated in ClearFeed without making any changes. Only after you've reviewed and confirmed the dry run results should you proceed with the actual sync.
+
+---
+
 ### Menu Options
 
 After installing, a **"ClearFeed Data Sync"** menu will appear with these options:
