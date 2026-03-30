@@ -2,29 +2,6 @@
 
 A Google Apps Script integration that downloads channel data from ClearFeed and allows users to maintain the custom fields associated with those channels (ie. the corresponding customers) and sync customer custom field values from a Google Sheet to ClearFeed customers these fields back to ClearFeed via the ClearFeed REST API.
 
-## Overview
-
-This integration allows you to manage ClearFeed customer custom fields in bulk using Google Sheets. It reads customer data organized by Channel ID and updates the corresponding customer records in ClearFeed with custom field values.
-
-**How it works:**
-1. **Download Channel IDs** — Fetch all channels from your ClearFeed collections and populate them in the sheet
-2. **Add Custom Field Columns** — Create columns for each ClearFeed customer custom field you want to manage
-3. **Fill in Values** — Enter the custom field values for each channel
-4. **Sync Custom Fields** — Push the values from the sheet to ClearFeed customers
-5. **Repeat** — As new channels are added to ClearFeed, re-download channels and repeat the process
-
-## Key Features
-
-- **Channel Discovery**: Automatically fetches all channels from ClearFeed collections — no need to manually find Channel IDs
-- **Bidirectional Mapping**: Maps sheet columns to ClearFeed customer custom fields by name
-- **Incremental Updates**: Download Channel IDs updates existing channel names and adds new channels
-- **Batch Processing**: Process up to 500 customer updates per run
-- **Validation**: Comprehensive validation including duplicate channel checks, field type validation, and value validation
-- **Dry Run Mode**: Preview changes before applying them
-- **Automatic Scheduling**: Optional hourly sync trigger
-- **Progress Tracking**: Real-time progress updates during sync
-- **Error Handling**: Retry logic with exponential backoff for API failures
-
 ## Prerequisites
 
 Before using this integration:
