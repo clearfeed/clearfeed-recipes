@@ -248,6 +248,13 @@ function syncCustomFieldsFromSheet(dryRun = null) {
       if (updateResult.success) {
         Logger.log(`✅ "${customerName}" (${channelId} v${customerVersion}) → ${rowChanges.join(', ')}`);
         results.success++;
+        // Track changes for summary
+        changes.push({
+          row: i + 2,
+          channel: channelId,
+          customer: customerName || 'Unknown',
+          changes: rowChanges
+        });
       } else if (updateResult.versionConflict) {
         Logger.log(`⚠️ Version conflict for "${customerName}" (${customerId}) - customer was modified by another process`);
         results.versionConflicts++;
@@ -369,9 +376,10 @@ function buildSummary(results, totalRows, dryRun, duration, validationErrors, ch
     }
   }
 
-  // For dry run, show sample changes
-  if (dryRun && changes.length > 0) {
-    alertMessage += '\n\nSample Changes (first 5):\n';
+  // Show sample changes for both dry run and regular sync
+  if (changes.length > 0) {
+    const sectionTitle = dryRun ? 'Sample Changes (first 5):' : 'Changes Applied (first 5):';
+    alertMessage += '\n\n' + sectionTitle + '\n';
     changes.slice(0, 5).forEach(c => {
       alertMessage += `\nRow ${c.row} (${c.customer}):\n  ${c.changes.join('\n  ')}`;
     });
