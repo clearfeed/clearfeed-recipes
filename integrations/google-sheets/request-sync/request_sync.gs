@@ -5,7 +5,8 @@
     COLLECTION_ID: null, // Replace with your collection ID or set to null/empty to fetch from all collections
     SHEET_NAME: "ClearFeed Requests", // Name of the sheet tab
     SPREADSHEET_ID: "", // Leave empty to use current spreadsheet, or specify ID
-    INITIAL_DAYS_BACK: 14 // For initial sync, fetch requests from this many days back
+    INITIAL_DAYS_BACK: 14, // For initial sync, fetch requests from this many days back
+    INCLUDE_MESSAGES: false // Set INCLUDE_MESSAGES to true if you want to include the "Messages" column in the sheet.
   };
 
   const BASE_URL = "https://api.clearfeed.app/v1/rest/requests";
@@ -13,8 +14,9 @@
   const CUSTOMERS_URL = "https://api.clearfeed.app/v1/rest/customers";
   const LAST_SYNC_PROPERTY = "LAST_SYNC_PROPERTY";
 
-  // Customer requested columns (simplified readable names)
-  const HEADERS = [
+  // Get headers based on INCLUDE_MESSAGES configuration
+  function getHeaders() {
+    const baseHeaders = [
     'ID',
     'Title',
     'Priority',
@@ -43,9 +45,15 @@
     'Resolution Time (mins)',
     'Resolution Time Breached',
     'First Resolution Time (mins)',
-    'Last Message Time',
-    'Messages'
+    'Last Message Time'
   ];
+
+    // Conditionally add Messages column
+    if (CONFIG.INCLUDE_MESSAGES) {
+      return [...baseHeaders, 'Messages'];
+    }
+    return baseHeaders;
+  }
 
   // Global cache for user data (id -> name mapping)
   let userCache = null;
@@ -424,8 +432,8 @@
         });
       }
 
-      // Add message authors
-      if (request.messages && Array.isArray(request.messages)) {
+      // Add message authors (only if INCLUDE_MESSAGES is enabled)
+      if (CONFIG.INCLUDE_MESSAGES && request.messages && Array.isArray(request.messages)) {
         request.messages.forEach(msg => {
           if (msg.author) {
             userIds.add(msg.author);
@@ -479,8 +487,10 @@
         params.next_cursor = nextCursor;
       }
 
-      // Always include messages in the response
-      params.include = "messages";
+      // Only include messages if configured
+      if (CONFIG.INCLUDE_MESSAGES) {
+        params.include = "messages";
+      }
 
       // Set up time filtering based on sync type
       if (isInitialSync) {
@@ -586,8 +596,8 @@
     sheet.clear();
 
     // Set headers
-    const headerRange = sheet.getRange(1, 1, 1, HEADERS.length);
-    headerRange.setValues([HEADERS]);
+    const headerRange = sheet.getRange(1, 1, 1, getHeaders().length);
+    headerRange.setValues([getHeaders()]);
     headerRange.setFontWeight('bold');
     headerRange.setBackground('#f0f0f0');
 
@@ -595,11 +605,11 @@
     const dataRows = requests.map(request => extractRequestData(request));
 
     if (dataRows.length > 0) {
-      const dataRange = sheet.getRange(2, 1, dataRows.length, HEADERS.length);
+      const dataRange = sheet.getRange(2, 1, dataRows.length, getHeaders().length);
       dataRange.setValues(dataRows);
     }
 
-    sheet.autoResizeColumns(1, HEADERS.length);
+    sheet.autoResizeColumns(1, getHeaders().length);
     Logger.log(`Initial sync: Added ${requests.length} requests`);
   }
 
@@ -645,7 +655,7 @@
       if (existingRequestsMap.has(requestId)) {
         // Update existing row
         const rowIndex = existingRequestsMap.get(requestId);
-        const range = sheet.getRange(rowIndex, 1, 1, HEADERS.length);
+        const range = sheet.getRange(rowIndex, 1, 1, getHeaders().length);
         range.setValues([requestData]);
         updatedCount++;
       } else {
@@ -655,7 +665,7 @@
       }
     });
 
-    sheet.autoResizeColumns(1, HEADERS.length);
+    sheet.autoResizeColumns(1, getHeaders().length);
     Logger.log(`Incremental sync: Updated ${updatedCount} requests, added ${addedCount} new requests`);
   }
 
@@ -664,7 +674,7 @@
    * @param {Object} request - The request object
    */
   function extractRequestData(request) {
-    return HEADERS.map(header => {
+    return getHeaders().map(header => {
       try {
         // Special handling for specific columns
         switch (header) {

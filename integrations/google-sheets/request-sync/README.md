@@ -51,14 +51,14 @@ const CONFIG = {
 
 **Required Configuration:**
 
-1. **API_KEY**: Replace the empty string with your ClearFeed API token
+1. **API_KEY**: Replace the placeholder with your ClearFeed API token
    ```javascript
    API_KEY: "your-clearfeed-api-token-here"
    ```
 
 **Optional Configuration:**
 
-2. **COLLECTION_ID**: 
+2. **COLLECTION_ID**:
    - Set to `null` to sync requests from all collections
    - Set to a specific number to sync only one collection: `COLLECTION_ID: 123`
 
@@ -68,10 +68,10 @@ const CONFIG = {
 
 5. **INITIAL_DAYS_BACK**: How many days of historical data to fetch during the first sync (default: 14 days)
 
-6. **INCLUDE_MESSAGES**: Set to `true` to include message conversations in the sync (default: `false`)
-   - When enabled, adds a "messages" column with formatted conversation data
-   - Messages are formatted as `[["r", "message text"], ["nr", "other message"]]` where "r" = responder, "nr" = non-responder
-   - Note: Including messages will increase sync time and data usage
+6. **INCLUDE_MESSAGES**: Controls whether to include the "Messages" column (default: `false`)
+   - **`false`** (recommended for statistical analysis): Faster sync, the Messages column is excluded, and messages are not fetched from the API
+   - **`true`**: Includes the Messages column with full conversation history for each request
+   - **Note**: When set to `false`, the script skips message fetching entirely, resulting in significantly faster sync times and reduced API usage
 
 ### Step 5: Save and Set Up the Sync
 
@@ -153,11 +153,10 @@ Controls how much historical data to fetch during the initial sync:
 - **90 days**: Maximum recommended for large datasets
 
 ### INCLUDE_MESSAGES
-Controls whether to include message conversations in the sync:
-- **`false`** (default): Faster sync, smaller data footprint
-- **`true`**: Includes full conversation history for each request
-- Messages are formatted as nested arrays: `[["r", "responder message"], ["nr", "customer message"]]`
-- Useful for analyzing conversation patterns and response quality
+Controls whether to include the "Messages" column and fetch message content from the API:
+- **`false`** (default, recommended): The Messages column is excluded from the sheet, and messages are not fetched from the API. This results in significantly faster sync times and is ideal for statistical analysis.
+- **`true`**: Includes the Messages column with full conversation history for each request. Messages are formatted as: `[Responder] Author Name: Message text`
+- **Performance Impact**: When set to `false`, the script skips the entire message fetching and processing logic, making syncs much faster and reducing API usage
 
 ## Frequently Asked Questions
 
