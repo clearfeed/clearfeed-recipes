@@ -931,7 +931,7 @@
   function setupSync() {
     try {
       // Validate configuration
-      if (!CONFIG.API_KEY || CONFIG.API_KEY === "YOUR_API_KEY") {
+      if (!CONFIG.API_KEY || CONFIG.API_KEY === "YOUR_API_KEY" || CONFIG.API_KEY === "PAT_USER_TOKEN") {
         throw new Error("Please update CONFIG.API_KEY with your actual Clearfeed API key");
       }
 
