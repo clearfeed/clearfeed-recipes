@@ -356,10 +356,10 @@ function buildSummary(results, totalRows, dryRun, duration, validationErrors, ch
   const logMessage = summaryParts.join(' | ');
 
   // Add performance note to log for large datasets
-  if (totalRows > 100) {
-    const avgTimePerRow = (duration / totalProcessed).toFixed(2);
-    logMessage += `\n📊 Performance: ${avgTimePerRow}s per row average`;
-  }
+  // if (totalRows > 100) {
+    // const avgTimePerRow = (duration / totalProcessed).toFixed(2);
+    // logMessage += `\n📊 Performance: ${avgTimePerRow}s per row average`;
+  // }
 
   let alertTitle = dryRun ? '🔍 Dry Run Results' : 'Sync Complete';
   let alertMessage = summaryParts.join(' | ');
@@ -390,7 +390,7 @@ function buildSummary(results, totalRows, dryRun, duration, validationErrors, ch
 
   // Show sample changes for both dry run and regular sync
   if (changes.length > 0) {
-    const sectionTitle = dryRun ? 'Sample Changes (first 5):' : 'Changes Applied (first 5):';
+    const sectionTitle = dryRun ? 'Sample Changes (first 5):' : 'Changes Applied Successfully (first 5):';
     alertMessage += '\n\n' + sectionTitle + '\n';
     changes.slice(0, 5).forEach(c => {
       alertMessage += `\nRow ${c.row} (${c.customer}):\n  ${c.changes.join('\n  ')}`;
