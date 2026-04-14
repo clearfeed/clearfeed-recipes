@@ -6,13 +6,16 @@ const CONFIG = {
   SHEET_NAME: "ClearFeed Requests", // Name of the sheet tab
   SPREADSHEET_ID: "", // Leave empty to use current spreadsheet, or specify ID
   INITIAL_DAYS_BACK: 14, // For initial sync, fetch requests from this many days back
-  INCLUDE_MESSAGES: false, // Set to true to include messages in the sync (disabled by default)
-  SLACK_TOKEN: "" // Optional: Slack Bot Token (xoxb-...) with users:read scope to fetch user names. Leave empty to show IDs only.
+  INCLUDE_MESSAGES: false // Set to true to include messages in the sync (disabled by default)
 };
 
 const BASE_URL="https://api.clearfeed.app/v1/rest/requests";
+const USERS_URL = "https://api.clearfeed.app/v1/rest/users";
 const LAST_SYNC_PROPERTY = "LAST_SYNC_PROPERTY";
 const CUSTOM_FIELDS_URL = 'https://api.clearfeed.app/v1/rest/custom-fields';
+
+// Global cache for user data (id -> user object mapping)
+let userCache = null;
 
 // Extra columns that are not in the base request object but need special handling
 const EXTRA_COLUMNS = [
@@ -49,6 +52,9 @@ function syncClearfeedRequests() {
     const cfData = getCustomFieldData();
     Logger.log(`Fetched ${cfData.length} custom fields`);
 
+    // Initialize user cache from persistent storage
+    initializeUserCache();
+
     // Fetch requests from Clearfeed
     const requests = fetchClearfeedRequests(isInitialSync, lastSyncTime);
     Logger.log(`Fetched ${requests.length} requests`);
@@ -57,6 +63,9 @@ function syncClearfeedRequests() {
       Logger.log("No new or updated requests found");
       return;
     }
+
+    // Pre-fetch user data for all requests (batched for efficiency)
+    prefetchUsers(requests);
 
     // Update the sheet
     if (isInitialSync) {
@@ -67,6 +76,9 @@ function syncClearfeedRequests() {
 
     // Update last sync time
     setLastSyncTime(new Date().toISOString());
+
+    // Persist user cache
+    saveUserCache();
 
     Logger.log("Sync completed successfully");
 
@@ -220,55 +232,134 @@ function resolveCustomFieldValue(rawValue, cf) {
 }
 
 /**
- * Get Slack user name from user ID with caching
- * @param {string} userId - Slack user ID (e.g., UABC123)
+ * Initialize user cache from persistent storage
+ */
+function initializeUserCache() {
+  const cache = PropertiesService.getScriptProperties();
+  const cachedData = cache.getProperty('user_cache');
+  userCache = cachedData ? JSON.parse(cachedData) : {};
+  Logger.log(`User cache initialized with ${Object.keys(userCache).length} entries`);
+}
+
+/**
+ * Save user cache to persistent storage
+ */
+function saveUserCache() {
+  if (userCache) {
+    const cache = PropertiesService.getScriptProperties();
+    cache.setProperty('user_cache', JSON.stringify(userCache));
+  }
+}
+
+/**
+ * Fetch users from ClearFeed API by their IDs (batch request)
+ * @param {Array<string>} userIds - Array of user IDs to fetch
+ * @returns {Object} Map of user ID to user object
+ */
+function fetchUsersByIds(userIds) {
+  if (!userIds || userIds.length === 0) return {};
+
+  // Filter out IDs we already have in cache
+  const uncachedIds = userIds.filter(id => !userCache[id]);
+  if (uncachedIds.length === 0) return userCache;
+
+  // Split into batches of 50 to avoid URL length limits
+  const batchSize = 50;
+  const results = {};
+
+  for (let i = 0; i < uncachedIds.length; i += batchSize) {
+    const batch = uncachedIds.slice(i, i + batchSize);
+    const idsParam = batch.join(',');
+
+    try {
+      const url = `${USERS_URL}?ids=${encodeURIComponent(idsParam)}`;
+      const response = UrlFetchApp.fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${CONFIG.API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        muteHttpExceptions: true
+      });
+
+      if (response.getResponseCode() === 200) {
+        const data = JSON.parse(response.getContentText());
+        const users = data.users || [];
+
+        users.forEach(user => {
+          results[user.id] = user;
+        });
+
+        Logger.log(`Fetched ${users.length} users from ClearFeed API`);
+      } else {
+        Logger.log(`Users API error: ${response.getResponseCode()} - ${response.getContentText()}`);
+      }
+    } catch (error) {
+      Logger.log(`Error fetching users: ${error.toString()}`);
+    }
+  }
+
+  // Update cache with new results
+  Object.assign(userCache, results);
+  return userCache;
+}
+
+/**
+ * Get user name from user ID using ClearFeed Users API
+ * @param {string} userId - User ID
  * @returns {string} User display name or original ID if lookup fails
  */
-function getSlackUserName(userId) {
+function getUserName(userId) {
   if (!userId) return '';
-  if (!CONFIG.SLACK_TOKEN) return userId; // Return ID if no token configured
 
-  // Check cache first (using script properties for persistent cache)
-  const cache = PropertiesService.getScriptProperties();
-  const cacheKey = `slack_user_${userId}`;
-  const cachedName = cache.getProperty(cacheKey);
-
-  if (cachedName) {
-    return cachedName;
+  // Return cached value if available
+  if (userCache && userCache[userId]) {
+    return userCache[userId].name || userId;
   }
 
-  try {
-    // Call Slack API to get user info (using GET with query parameter)
-    const url = `https://slack.com/api/users.info?user=${encodeURIComponent(userId)}`;
-    const response = UrlFetchApp.fetch(url, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${CONFIG.SLACK_TOKEN}`
-      },
-      muteHttpExceptions: true
-    });
+  // Fetch this user
+  fetchUsersByIds([userId]);
 
-    const result = JSON.parse(response.getContentText());
-    Logger.log(`Slack API response for ${userId}: ${response.getContentText()}`);
+  return (userCache && userCache[userId]) ? userCache[userId].name : userId;
+}
 
-    if (result.ok && result.user) {
-      // Use real_name if available, otherwise fall back to name
-      const userName = result.user.real_name || result.user.name || userId;
+/**
+ * Pre-fetch all users found in requests (batch optimization)
+ * @param {Array} requests - Array of request objects
+ */
+function prefetchUsers(requests) {
+  const userIds = new Set();
 
-      // Cache the result (no expiration - stored until manually cleared)
-      cache.setProperty(cacheKey, userName);
-
-      Logger.log(`Resolved Slack user ${userId} to "${userName}"`);
-      return userName;
-    } else {
-      Logger.log(`Slack API error for ${userId}: ${result.error || 'Unknown error'}`);
+  requests.forEach(request => {
+    // Add author
+    if (request.author) {
+      userIds.add(request.author);
     }
-  } catch (error) {
-    Logger.log(`Error fetching Slack user ${userId}: ${error.toString()}`);
-  }
 
-  // Fallback to returning the original ID
-  return userId;
+    // Add assignee
+    if (request.assignee && request.assignee.id) {
+      userIds.add(request.assignee.id);
+    }
+
+    // Add channel owner
+    if (request.channel && request.channel.owner) {
+      userIds.add(request.channel.owner);
+    }
+
+    // Add message authors (only if INCLUDE_MESSAGES is enabled)
+    if (CONFIG.INCLUDE_MESSAGES && request.messages && Array.isArray(request.messages)) {
+      request.messages.forEach(msg => {
+        if (msg.author) {
+          userIds.add(msg.author);
+        }
+      });
+    }
+  });
+
+  if (userIds.size > 0) {
+    Logger.log(`Pre-fetching ${userIds.size} unique users...`);
+    fetchUsersByIds(Array.from(userIds));
+  }
 }
 
 /**
@@ -516,11 +607,11 @@ function extractRequestData(request, headers, cfData) {
     // NESTED FIELD COLUMNS - handle specially by header name
     if (header === 'assignee') {
       const assigneeId = request.assignee ? request.assignee.id || '' : '';
-      return assigneeId ? getSlackUserName(assigneeId) : '';
+      return assigneeId ? getUserName(assigneeId) : '';
     }
 
     if (header === 'author') {
-      return request.author ? getSlackUserName(request.author) : '';
+      return request.author ? getUserName(request.author) : '';
     }
 
     if (header === 'author_email') {
@@ -730,28 +821,18 @@ function resetSync() {
 }
 
 /**
- * Utility function to clear the Slack user name cache
- * Useful when user names change or you want to refresh the cache
+ * Utility function to clear the user name cache
  */
-function clearUserCache() {
+function clearCache() {
   const cache = PropertiesService.getScriptProperties();
-  const properties = cache.getProperties();
-  let clearedCount = 0;
-
-  // Delete all properties that start with 'slack_user_'
-  for (const key in properties) {
-    if (key.indexOf('slack_user_') === 0) {
-      cache.deleteProperty(key);
-      clearedCount++;
-    }
-  }
-
-  Logger.log(`Cleared ${clearedCount} cached user names`);
+  cache.deleteProperty('user_cache');
+  userCache = {};
+  Logger.log("Cleared user name cache");
 
   const ui = SpreadsheetApp.getUi();
   ui.alert(
     'Cache Cleared',
-    `Cleared ${clearedCount} cached Slack user names. Names will be re-fetched on next sync.`,
+    'Cleared cached user names. Names will be re-fetched on next sync.',
     ui.ButtonSet.OK
   );
 }
@@ -770,7 +851,7 @@ function onOpen() {
     .addItem('⏹️ Disable Hourly Sync', 'disableHourlyTrigger')
     .addSeparator()
     .addItem('🔄 Reset Sync', 'resetSync')
-    .addItem('🗑️ Clear User Name Cache', 'clearUserCache')
+    .addItem('🗑️ Clear Cache', 'clearCache')
     .addItem('📋 View Logs', 'showLogs');
 
   menu.addToUi();
