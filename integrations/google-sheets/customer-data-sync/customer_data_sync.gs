@@ -36,6 +36,24 @@ const CONFIG = {
 };
 
 // ══════════════════════════════════════════════
+// UI HELPER - Handles both UI and trigger contexts
+// ══════════════════════════════════════════════
+
+/**
+ * Shows alert if UI is available (manual execution), otherwise logs to console (trigger execution)
+ * This allows the same function to work both manually and via time-based triggers
+ */
+function showAlertOrLog(title, message) {
+  try {
+    const ui = SpreadsheetApp.getUi();
+    ui.alert(title, message, ui.ButtonSet.OK);
+  } catch (e) {
+    // Running from trigger - no UI available, log instead
+    Logger.log(`${title}: ${message}`);
+  }
+}
+
+// ══════════════════════════════════════════════
 // CONFIG VALIDATION
 // ══════════════════════════════════════════════
 
@@ -75,7 +93,7 @@ function syncCustomFieldsFromSheet(dryRun = null) {
     // Validate configuration
     const configErrors = validateConfig();
     if (configErrors.length > 0) {
-      SpreadsheetApp.getUi().alert('⚠️ Configuration Error', configErrors.join('\n'), SpreadsheetApp.getUi().ButtonSet.OK);
+      showAlertOrLog('⚠️ Configuration Error', configErrors.join('\n'));
       return;
     }
 
@@ -87,7 +105,7 @@ function syncCustomFieldsFromSheet(dryRun = null) {
     // Validate required columns
     const sheetValidation = validateSheetStructure(sheet);
     if (!sheetValidation.valid) {
-      SpreadsheetApp.getUi().alert('⚠️ Sheet Structure Error', sheetValidation.error, SpreadsheetApp.getUi().ButtonSet.OK);
+      showAlertOrLog('⚠️ Sheet Structure Error', sheetValidation.error);
       return;
     }
 
@@ -118,11 +136,7 @@ function syncCustomFieldsFromSheet(dryRun = null) {
     if (unmatchedColumns.length > 0) {
       const errorMsg = `The following sheet columns do not match any ClearFeed customer custom fields:\n\n${unmatchedColumns.join(', ')}\n\nPlease either:\n- Rename the columns to match exact custom field names in ClearFeed\n- Add these as new custom fields in ClearFeed\n- Add the column names to SKIP_COLUMNS in the app script configuration\n- Or remove these columns from the sheet`;
 
-      SpreadsheetApp.getUi().alert(
-        '⚠️ Unmatched Columns Found',
-        errorMsg,
-        SpreadsheetApp.getUi().ButtonSet.OK
-      );
+      showAlertOrLog('⚠️ Unmatched Columns Found', errorMsg);
       Logger.log(`⚠️ Unmatched columns: ${JSON.stringify(unmatchedColumns)}`);
       return;
     }
@@ -137,16 +151,15 @@ function syncCustomFieldsFromSheet(dryRun = null) {
     if (CONFIG.STRICT_VALIDATION && !validationResult.valid) {
       const errorTitle = '❌ Sheet Validation Failed';
       const errorMessage = validationResult.errors.join('\n\n');
-      SpreadsheetApp.getUi().alert(errorTitle, errorMessage, SpreadsheetApp.getUi().ButtonSet.OK);
+      showAlertOrLog(errorTitle, errorMessage);
       Logger.log(`❌ Validation failed:\n${errorMessage}`);
       return;
     }
 
     if (Object.keys(matchedColumns).length === 0) {
-      SpreadsheetApp.getUi().alert(
+      showAlertOrLog(
         '⚠️ No Matching Custom Fields',
-        'No sheet columns matched any ClearFeed customer custom fields.\n\nMake sure column names exactly match your custom field names in ClearFeed.',
-        SpreadsheetApp.getUi().ButtonSet.OK
+        'No sheet columns matched any ClearFeed customer custom fields.\n\nMake sure column names exactly match your custom field names in ClearFeed.'
       );
       return;
     }
@@ -287,11 +300,11 @@ function syncCustomFieldsFromSheet(dryRun = null) {
       alertMessage += '\n\nTo apply changes, run "Sync Custom Fields" from the menu.';
     }
 
-    SpreadsheetApp.getUi().alert(summary.alertTitle, alertMessage, SpreadsheetApp.getUi().ButtonSet.OK);
+    showAlertOrLog(summary.alertTitle, alertMessage);
 
   } catch (error) {
     Logger.log(`❌ Error: ${error}\n${error.stack}`);
-    SpreadsheetApp.getUi().alert('Error', `${error}\n\nCheck the execution logs for more details.`, SpreadsheetApp.getUi().ButtonSet.OK);
+    showAlertOrLog('Error', `${error}\n\nCheck the execution logs for more details.`);
   }
 }
 
@@ -599,7 +612,7 @@ function testConnection() {
     results.push(`❌ Google Sheet — ${e}`);
   }
 
-  SpreadsheetApp.getUi().alert('🔌 Connection Test Results', results.join('\n\n'), SpreadsheetApp.getUi().ButtonSet.OK);
+  showAlertOrLog('🔌 Connection Test Results', results.join('\n\n'));
 }
 
 // ══════════════════════════════════════════════
@@ -615,10 +628,9 @@ function enableHourlySync() {
     .create();
 
   Logger.log(`✅ Periodic sync enabled (every ${CONFIG.TRIGGER_INTERVAL_HR} hour(s))`);
-  SpreadsheetApp.getUi().alert(
+  showAlertOrLog(
     '✅ Periodic Sync Enabled',
-    `Sync will run automatically every ${CONFIG.TRIGGER_INTERVAL_HR} hour(s).\n\nUse "Disable Periodic Sync" to stop it.`,
-    SpreadsheetApp.getUi().ButtonSet.OK
+    `Sync will run automatically every ${CONFIG.TRIGGER_INTERVAL_HR} hour(s).\n\nUse "Disable Periodic Sync" to stop it.`
   );
 }
 
@@ -630,12 +642,11 @@ function disableHourlySync() {
   const deleted = deleteExistingTriggers();
 
   Logger.log(`🛑 Periodic sync disabled. ${deleted} trigger(s) removed.`);
-  SpreadsheetApp.getUi().alert(
+  showAlertOrLog(
     '🛑 Periodic Sync Disabled',
     deleted > 0
       ? `${deleted} trigger(s) removed. Sync will no longer run automatically.`
-      : 'No active triggers found — nothing to disable.',
-    SpreadsheetApp.getUi().ButtonSet.OK
+      : 'No active triggers found — nothing to disable.'
   );
 }
 
@@ -658,7 +669,7 @@ function syncChannelIds() {
   try {
     const configErrors = validateConfig();
     if (configErrors.length > 0) {
-      SpreadsheetApp.getUi().alert('Configuration Error', configErrors.join('\n'), SpreadsheetApp.getUi().ButtonSet.OK);
+      showAlertOrLog('Configuration Error', configErrors.join('\n'));
       return;
     }
 
@@ -788,7 +799,7 @@ function syncChannelIds() {
     }
 
     if (missingChannels.length === 0 && updatedChannels.length === 0) {
-      SpreadsheetApp.getUi().alert('Download Channel IDs', 'All channels are already in the sheet and up to date.', SpreadsheetApp.getUi().ButtonSet.OK);
+      showAlertOrLog('Download Channel IDs', 'All channels are already in the sheet and up to date.');
       return;
     }
 
@@ -805,11 +816,11 @@ function syncChannelIds() {
       message += `\n\nNew channels:\n${missingChannels.slice(0, 10).map(ch => `${ch.name} (${ch.id})`).join('\n')}${missingChannels.length > 10 ? `\n... and ${missingChannels.length - 10} more` : ''}`;
     }
 
-    SpreadsheetApp.getUi().alert('Download Channel IDs', message, SpreadsheetApp.getUi().ButtonSet.OK);
+    showAlertOrLog('Download Channel IDs', message);
 
   } catch (error) {
     Logger.log(`Error syncing channel IDs: ${error}\n${error.stack}`);
-    SpreadsheetApp.getUi().alert('Error', `${error}`, SpreadsheetApp.getUi().ButtonSet.OK);
+    showAlertOrLog('Error', `${error}`);
   }
 }
 
