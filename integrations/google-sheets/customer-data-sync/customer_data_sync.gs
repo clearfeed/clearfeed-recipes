@@ -39,6 +39,15 @@ const CONFIG = {
 // CONFIG VALIDATION
 // ══════════════════════════════════════════════
 
+// Show an alert if running from the UI; otherwise log to the execution log.
+function showAlert(title, message) {
+  try {
+    SpreadsheetApp.getUi().alert(title, message, SpreadsheetApp.getUi().ButtonSet.OK);
+  } catch (e) {
+    Logger.log(`${title}\n${message}`);
+  }
+}
+
 function validateConfig() {
   const errors = [];
 
@@ -75,7 +84,7 @@ function syncCustomFieldsFromSheet(dryRun = null) {
     // Validate configuration
     const configErrors = validateConfig();
     if (configErrors.length > 0) {
-      SpreadsheetApp.getUi().alert('⚠️ Configuration Error', configErrors.join('\n'), SpreadsheetApp.getUi().ButtonSet.OK);
+      showAlert('⚠️ Configuration Error', configErrors.join('\n'));
       return;
     }
 
@@ -87,7 +96,7 @@ function syncCustomFieldsFromSheet(dryRun = null) {
     // Validate required columns
     const sheetValidation = validateSheetStructure(sheet);
     if (!sheetValidation.valid) {
-      SpreadsheetApp.getUi().alert('⚠️ Sheet Structure Error', sheetValidation.error, SpreadsheetApp.getUi().ButtonSet.OK);
+      showAlert('⚠️ Sheet Structure Error', sheetValidation.error);
       return;
     }
 
@@ -118,10 +127,9 @@ function syncCustomFieldsFromSheet(dryRun = null) {
     if (unmatchedColumns.length > 0) {
       const errorMsg = `The following sheet columns do not match any ClearFeed customer custom fields:\n\n${unmatchedColumns.join(', ')}\n\nPlease either:\n- Rename the columns to match exact custom field names in ClearFeed\n- Add these as new custom fields in ClearFeed\n- Add the column names to SKIP_COLUMNS in the app script configuration\n- Or remove these columns from the sheet`;
 
-      SpreadsheetApp.getUi().alert(
+      showAlert(
         '⚠️ Unmatched Columns Found',
-        errorMsg,
-        SpreadsheetApp.getUi().ButtonSet.OK
+        errorMsg
       );
       Logger.log(`⚠️ Unmatched columns: ${JSON.stringify(unmatchedColumns)}`);
       return;
@@ -137,16 +145,15 @@ function syncCustomFieldsFromSheet(dryRun = null) {
     if (CONFIG.STRICT_VALIDATION && !validationResult.valid) {
       const errorTitle = '❌ Sheet Validation Failed';
       const errorMessage = validationResult.errors.join('\n\n');
-      SpreadsheetApp.getUi().alert(errorTitle, errorMessage, SpreadsheetApp.getUi().ButtonSet.OK);
+      showAlert(errorTitle, errorMessage);
       Logger.log(`❌ Validation failed:\n${errorMessage}`);
       return;
     }
 
     if (Object.keys(matchedColumns).length === 0) {
-      SpreadsheetApp.getUi().alert(
+      showAlert(
         '⚠️ No Matching Custom Fields',
-        'No sheet columns matched any ClearFeed customer custom fields.\n\nMake sure column names exactly match your custom field names in ClearFeed.',
-        SpreadsheetApp.getUi().ButtonSet.OK
+        'No sheet columns matched any ClearFeed customer custom fields.\n\nMake sure column names exactly match your custom field names in ClearFeed.'
       );
       return;
     }
@@ -287,11 +294,11 @@ function syncCustomFieldsFromSheet(dryRun = null) {
       alertMessage += '\n\nTo apply changes, run "Sync Custom Fields" from the menu.';
     }
 
-    SpreadsheetApp.getUi().alert(summary.alertTitle, alertMessage, SpreadsheetApp.getUi().ButtonSet.OK);
+    showAlert(summary.alertTitle, alertMessage);
 
   } catch (error) {
     Logger.log(`❌ Error: ${error}\n${error.stack}`);
-    SpreadsheetApp.getUi().alert('Error', `${error}\n\nCheck the execution logs for more details.`, SpreadsheetApp.getUi().ButtonSet.OK);
+    showAlert('Error', `${error}\n\nCheck the execution logs for more details.`);
   }
 }
 
