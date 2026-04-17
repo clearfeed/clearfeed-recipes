@@ -20,6 +20,7 @@ let userCache = null;
 // Extra columns that are not in the base request object but need special handling
 const EXTRA_COLUMNS = [
   'CSAT_Survey',
+  'CSAT_Comment',
   'Channel',
   'Collection',
   'Request_Channel_URL',
@@ -537,6 +538,13 @@ function getExtraColumnValue(request, header) {
       if (surveyType === 'five_point_rating') {
         const max = csat.response.max_value || 5;
         return value + ' out of ' + max;
+      }
+      return '';
+
+    case 'CSAT_Comment':
+      // comment is directly on csat_survey object, not under response
+      if (csat && csat.comment !== undefined && csat.comment !== null) {
+        return csat.comment;
       }
       return '';
 
