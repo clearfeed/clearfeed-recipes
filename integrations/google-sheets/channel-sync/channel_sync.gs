@@ -1,5 +1,5 @@
 // ClearFeed Channel Sync to Google Sheets
-// Syncs collection-to-channel mappings from a Google Sheet to ClearFeed
+// Syncs collection-to-customer-to-channel mappings from a Google Sheet to ClearFeed
 //
 // Configuration - Update these values for your setup
 const CONFIG = {
@@ -9,6 +9,8 @@ const CONFIG = {
   SPREADSHEET_ID: "", // Leave empty to use current spreadsheet, or specify ID
   CREATE_EMPTY_CUSTOMER: false, // Whether to create an empty customer object when adding channels
   SET_OWNER: false, // Whether to set the owner field when adding channels
+  CUSTOMER_FETCH_PAGE_SIZE: 5, // Page size for fetching customers (small to avoid bandwidth issues)
+  CUSTOMER_FETCH_DELAY_MS: 5000, // Delay between customer fetch requests (milliseconds)
 };
 
 const BASE_URL = "https://api.clearfeed.app/v1/rest";
@@ -87,8 +89,12 @@ function syncChannels() {
     const collections = fetchCollections();
     Logger.log(`Fetched ${collections.length} collections from ClearFeed`);
 
+    // Fetch all customers
+    const customers = fetchAllCustomers();
+    Logger.log(`Fetched ${customers.length} customers from ClearFeed`);
+
     // Generate action plan
-    const planData = generateActionPlan(sheetData, collections);
+    const planData = generateActionPlan(sheetData, collections, customers);
     Logger.log("Action plan generated");
 
     // Display the plan
@@ -168,13 +174,14 @@ function testClearfeedConnection() {
     }
 
     const collections = fetchCollections();
+    const customers = fetchAllCustomers();
 
-    if (collections) {
-      const message = `✅ Connection successful!\n\nFound ${collections.length} collections in your ClearFeed account.`;
+    if (collections && customers) {
+      const message = `✅ Connection successful!\n\nFound ${collections.length} collections and ${customers.length} customers in your ClearFeed account.`;
       safeAlert("Connection Test", message);
       Logger.log("Connection test successful");
     } else {
-      safeAlert("Connection Failed", "Failed to fetch collections. Please check your API key.");
+      safeAlert("Connection Failed", "Failed to fetch data. Please check your API key.");
     }
 
   } catch (error) {
@@ -201,7 +208,7 @@ function showLogs() {
 
 /**
  * Read channel mappings from the sheet
- * Expects format: Collection | Slack channel (optional) | Channel ID
+ * Expects format: Collection | Customer | Channel Name | Channel ID
  * Skips the header row (row 1)
  */
 function readSheetData() {
@@ -213,24 +220,26 @@ function readSheetData() {
     return [];
   }
 
-  const data = sheet.getRange(2, 1, lastRow - 1, 3).getValues();
+  const data = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
   const mappings = [];
   const seenChannelIds = {}; // Track duplicates: channel_id -> row number
 
   for (let i = 0; i < data.length; i++) {
     const row = data[i];
     const collectionName = row[0];
-    const channelName = row[1];
-    const channelId = row[2];
+    const customerName = row[1];
+    const channelName = row[2];
+    const channelId = row[3];
 
-    // Skip rows with missing required data (collection and channel ID)
-    if (!collectionName || !channelId) {
+    // Skip rows with missing required data (collection, customer, and channel ID)
+    if (!collectionName || !customerName || !channelId) {
       continue;
     }
 
     // Trim whitespace
     const trimmedCollection = String(collectionName).trim();
-    // channelName is now optional - if empty, will be filled from API later
+    const trimmedCustomer = String(customerName).trim();
+    // channelName is optional - if empty, will be filled from API later
     const trimmedChannelName = channelName ? String(channelName).trim() : '';
     let trimmedChannelId = String(channelId).trim();
     // Remove leading # from channel ID if present
@@ -252,9 +261,11 @@ function readSheetData() {
 
     mappings.push({
       collection_name: trimmedCollection,
+      customer_name: trimmedCustomer,
       channel_name: trimmedChannelName,
       channel_id: trimmedChannelId,
-      _normalized_collection: normalizeCollectionName(trimmedCollection)
+      _normalized_collection: normalizeCollectionName(trimmedCollection),
+      _normalized_customer: normalizeCustomerName(trimmedCustomer)
     });
   }
 
@@ -303,6 +314,18 @@ function normalizeCollectionName(name) {
     .replace(/^["']|["']$/g, ''); // Remove surrounding quotes only
 }
 
+/**
+ * Normalize customer name for comparison
+ * Converts to lowercase, trims whitespace, and removes surrounding quotes
+ */
+function normalizeCustomerName(name) {
+  if (!name) return "";
+  return String(name)
+    .trim()
+    .toLowerCase()
+    .replace(/^["']|["']$/g, ''); // Remove surrounding quotes only
+}
+
 // =============================================================================
 // API Functions
 // =============================================================================
@@ -331,6 +354,61 @@ function fetchCollections() {
 
   const data = JSON.parse(response.getContentText());
   return data.collections || [];
+}
+
+/**
+ * Fetch all customers with pagination
+ * Uses small page size and delays to avoid bandwidth quota errors
+ */
+function fetchAllCustomers() {
+  const allCustomers = [];
+  let nextCursor = null;
+  const PAGE_SIZE = CONFIG.CUSTOMER_FETCH_PAGE_SIZE || 5;
+  const DELAY_MS = CONFIG.CUSTOMER_FETCH_DELAY_MS || 5000;
+  let pageCount = 0;
+
+  do {
+    let url = `${BASE_URL}/customers?limit=${PAGE_SIZE}`;
+    if (nextCursor) {
+      url += `&next_cursor=${encodeURIComponent(nextCursor)}`;
+    }
+
+    pageCount++;
+    Logger.log(`Fetching customers page ${pageCount}...`);
+
+    const response = UrlFetchApp.fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${CONFIG.API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      muteHttpExceptions: true
+    });
+
+    const responseCode = response.getResponseCode();
+    if (responseCode !== 200) {
+      throw new Error(`Failed to fetch customers: ${response.getContentText()}`);
+    }
+
+    const data = JSON.parse(response.getContentText());
+    const customers = data.customers || [];
+    allCustomers.push(...customers);
+
+    Logger.log(`Fetched ${customers.length} customers, total: ${allCustomers.length}`);
+
+    nextCursor = data.response_metadata?.next_cursor || null;
+
+    // Add delay between requests to avoid rate limiting
+    if (nextCursor) {
+      Logger.log(`Waiting ${DELAY_MS}ms before next request...`);
+      Utilities.sleep(DELAY_MS);
+    }
+
+  } while (nextCursor);
+
+  Logger.log(`Completed fetching ${allCustomers.length} customers in ${pageCount} pages`);
+  return allCustomers;
 }
 
 /**
@@ -424,40 +502,74 @@ function deleteChannel(channelId) {
   }
 }
 
+/**
+ * Move a customer to a different collection
+ * Returns {success: boolean, error: string}
+ */
+function moveCustomer(customerId, collectionId, version) {
+  const url = `${BASE_URL}/customers/${customerId}`;
+
+  const payload = {
+    version: version,
+    collection_id: collectionId
+  };
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${CONFIG.API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+
+  const code = response.getResponseCode();
+  if (code >= 200 && code < 300) {
+    return { success: true };
+  } else if (code === 409) {
+    return {
+      success: false,
+      error: `Version conflict: Customer was modified by another process. Please retry.`
+    };
+  } else {
+    return {
+      success: false,
+      error: `API error (${code}): ${response.getContentText()}`
+    };
+  }
+}
+
 // =============================================================================
 // Plan Generation Functions
 // =============================================================================
 
 /**
  * Generate an action plan by comparing desired state (sheet) with actual state (ClearFeed)
+ * Uses Collections → Customers → Channels model
  */
-function generateActionPlan(sheetData, collections) {
+function generateActionPlan(sheetData, collections, customers) {
   // Build lookup structures
   const collectionNameToId = {};
   const collectionOwners = {}; // collection_id -> most common owner
-  const actualChannelToCollection = {}; // normalized channel_id -> collection_id
+  const actualChannelToCustomer = {}; // channel_id -> {customer_id, customer_name, collection_id, collection_name}
+  const customerIdToCustomer = {}; // customer_id -> {id, name, collection_id, version, channel_ids}
   const channelIdToName = {}; // channel_id -> channel_name from API
 
+  // Map collections
   for (const col of collections) {
     const normalizedName = normalizeCollectionName(col.name);
     collectionNameToId[normalizedName] = col.id;
-    collectionOwners[col.id] = null; // Will be determined from channels
+    collectionOwners[col.id] = null;
 
-    // Track channel to collection mapping and owners
+    // Track most common owner for this collection
     const ownerCounts = {};
     for (const ch of (col.channels || [])) {
-      actualChannelToCollection[ch.id] = col.id;
-      // Store channel name from API for later use
-      if (ch.name) {
-        channelIdToName[ch.id] = ch.name;
-      }
-      // Track most common owner for this collection
       if (ch.owner) {
         ownerCounts[ch.owner] = (ownerCounts[ch.owner] || 0) + 1;
       }
     }
 
-    // Find most common owner
     if (Object.keys(ownerCounts).length > 0) {
       let maxCount = 0;
       for (const [owner, count] of Object.entries(ownerCounts)) {
@@ -469,10 +581,43 @@ function generateActionPlan(sheetData, collections) {
     }
   }
 
+  // Map customers and their channels
+  for (const cust of customers) {
+    customerIdToCustomer[cust.id] = {
+      id: cust.id,
+      name: cust.name,
+      collection_id: cust.collection_id,
+      version: cust.version,
+      channel_ids: cust.channel_ids || []
+    };
+
+    // Map each channel to its customer
+    for (const channelId of (cust.channel_ids || [])) {
+      // Find channel name from collections
+      let channelName = channelId;
+      for (const col of collections) {
+        for (const ch of (col.channels || [])) {
+          if (ch.id === channelId && ch.name) {
+            channelName = ch.name;
+            channelIdToName[channelId] = ch.name;
+            break;
+          }
+        }
+      }
+
+      actualChannelToCustomer[channelId] = {
+        customer_id: cust.id,
+        customer_name: cust.name,
+        collection_id: cust.collection_id,
+        collection_name: getCollectionName(cust.collection_id, collections)
+      };
+    }
+  }
+
   // Build desired state from sheet
-  const desiredChannelToCollection = {}; // channel_id -> collection_id
+  const desiredChannelToCollectionCustomer = {}; // channel_id -> {collection_id, customer_name}
   const collectionsNotFound = new Set();
-  const channelInfo = {}; // channel_id -> {name, collection_name}
+  const channelInfo = {}; // channel_id -> {name, collection_name, customer_name}
 
   for (const mapping of sheetData) {
     const normalizedCol = mapping._normalized_collection;
@@ -483,11 +628,17 @@ function generateActionPlan(sheetData, collections) {
     }
 
     const collectionId = collectionNameToId[normalizedCol];
-    desiredChannelToCollection[mapping.channel_id] = collectionId;
+    desiredChannelToCollectionCustomer[mapping.channel_id] = {
+      collection_id: collectionId,
+      customer_name: mapping.customer_name,
+      _normalized_customer: mapping._normalized_customer
+    };
+
     // Use fallback chain: sheet name → API name → channel ID
     channelInfo[mapping.channel_id] = {
       name: mapping.channel_name || channelIdToName[mapping.channel_id] || mapping.channel_id,
       collection_name: mapping.collection_name,
+      customer_name: mapping.customer_name,
       collection_id: collectionId
     };
   }
@@ -495,71 +646,76 @@ function generateActionPlan(sheetData, collections) {
   // Generate plan
   const plan = {
     toAdd: [],
-    toMove: [],
+    toMoveCustomers: [], // Moving customers between collections
     toRemove: [],
     collectionsNotFound: Array.from(collectionsNotFound)
   };
 
   // Channels to add: in desired but not in actual
-  for (const [channelId, collectionId] of Object.entries(desiredChannelToCollection)) {
-    if (!(channelId in actualChannelToCollection)) {
+  for (const [channelId, desiredInfo] of Object.entries(desiredChannelToCollectionCustomer)) {
+    if (!(channelId in actualChannelToCustomer)) {
       plan.toAdd.push({
         channel_id: channelId,
         channel_name: channelInfo[channelId].name,
         collection_name: channelInfo[channelId].collection_name,
-        collection_id: collectionId
+        customer_name: channelInfo[channelId].customer_name,
+        collection_id: desiredInfo.collection_id
       });
     }
   }
 
-  // Channels to move: in both, but different collection
-  for (const [channelId, desiredColId] of Object.entries(desiredChannelToCollection)) {
-    if (channelId in actualChannelToCollection) {
-      const actualColId = actualChannelToCollection[channelId];
-      if (desiredColId !== actualColId) {
-        // Find collection names
-        let fromCollectionName = "Unknown";
-        let toCollectionName = channelInfo[channelId].collection_name;
+  // Build customer movement plan: track which customers need to move to which collections
+  // Key: customer_id, Value: {from_collection_id, to_collection_id, customer_name, channel_ids}
+  const customerMovements = {};
 
-        for (const col of collections) {
-          if (col.id === actualColId) fromCollectionName = col.name;
-        }
+  for (const [channelId, desiredInfo] of Object.entries(desiredChannelToCollectionCustomer)) {
+    if (channelId in actualChannelToCustomer) {
+      const actualInfo = actualChannelToCustomer[channelId];
+      const desiredCollectionId = desiredInfo.collection_id;
+      const actualCollectionId = actualInfo.collection_id;
 
-        plan.toMove.push({
-          channel_id: channelId,
-          channel_name: channelInfo[channelId].name,
-          from_collection: fromCollectionName,
-          to_collection: toCollectionName,
-          to_collection_id: desiredColId
-        });
-      }
-    }
-  }
-
-  // Channels to remove: in actual but not in desired
-  for (const [channelId, collectionId] of Object.entries(actualChannelToCollection)) {
-    if (!(channelId in desiredChannelToCollection)) {
-      // Find collection and channel names
-      let collectionName = "Unknown";
-      let channelName = channelId;
-
-      for (const col of collections) {
-        if (col.id === collectionId) {
-          collectionName = col.name;
-          for (const ch of (col.channels || [])) {
-            if (ch.id === channelId) {
-              channelName = ch.name || channelId;
-              break;
-            }
-          }
+      // Find the customer for this channel (by matching customer name)
+      let targetCustomerId = null;
+      for (const [custId, cust] of Object.entries(customerIdToCustomer)) {
+        if (normalizeCustomerName(cust.name) === desiredInfo._normalized_customer &&
+            cust.channel_ids.includes(channelId)) {
+          targetCustomerId = custId;
           break;
         }
       }
 
+      // If customer found and needs to move to different collection
+      if (targetCustomerId && actualCollectionId !== desiredCollectionId) {
+        if (!customerMovements[targetCustomerId]) {
+          const customer = customerIdToCustomer[targetCustomerId];
+          customerMovements[targetCustomerId] = {
+            customer_id: targetCustomerId,
+            customer_name: customer.name,
+            version: customer.version,
+            from_collection_id: actualCollectionId,
+            from_collection_name: actualInfo.collection_name,
+            to_collection_id: desiredCollectionId,
+            to_collection_name: channelInfo[channelId].collection_name,
+            channel_ids: customer.channel_ids
+          };
+        }
+      }
+    }
+  }
+
+  // Convert customer movements to plan array
+  for (const movement of Object.values(customerMovements)) {
+    plan.toMoveCustomers.push(movement);
+  }
+
+  // Channels to remove: in actual but not in desired
+  for (const [channelId, actualInfo] of Object.entries(actualChannelToCustomer)) {
+    if (!(channelId in desiredChannelToCollectionCustomer)) {
       plan.toRemove.push({
         channel_id: channelId,
-        channel_name: channelName,
-        collection_name: collectionName
+        channel_name: channelIdToName[channelId] || channelId,
+        collection_name: actualInfo.collection_name,
+        customer_name: actualInfo.customer_name
       });
     }
   }
@@ -568,6 +724,18 @@ function generateActionPlan(sheetData, collections) {
     plan: plan,
     collectionOwners: collectionOwners
   };
+}
+
+/**
+ * Helper function to get collection name by ID
+ */
+function getCollectionName(collectionId, collections) {
+  for (const col of collections) {
+    if (col.id === collectionId) {
+      return col.name;
+    }
+  }
+  return "Unknown";
 }
 
 /**
@@ -595,17 +763,18 @@ function formatPlanMessage(plan) {
   if (plan.toAdd.length > 0) {
     lines.push(`📝 Channels to ADD: ${plan.toAdd.length}`);
     for (const item of plan.toAdd) {
-      lines.push(`   + ${item.channel_name} (${item.channel_id}) → ${item.collection_name}`);
+      lines.push(`   + ${item.channel_name} (${item.channel_id}) → ${item.collection_name} / ${item.customer_name}`);
     }
     lines.push("");
   }
 
-  // Channels to move
-  if (plan.toMove.length > 0) {
-    lines.push(`🔄 Channels to MOVE: ${plan.toMove.length}`);
-    for (const item of plan.toMove) {
-      lines.push(`   ~ ${item.channel_name} (${item.channel_id})`);
-      lines.push(`     ${item.from_collection} → ${item.to_collection}`);
+  // Customers to move (with their channels)
+  if (plan.toMoveCustomers.length > 0) {
+    lines.push(`🔄 Customers to MOVE: ${plan.toMoveCustomers.length}`);
+    for (const item of plan.toMoveCustomers) {
+      lines.push(`   ~ Customer: ${item.customer_name}`);
+      lines.push(`     ${item.from_collection_name} → ${item.to_collection_name}`);
+      lines.push(`     Channels moving: ${item.channel_ids.length} channel(s)`);
     }
     lines.push("");
   }
@@ -614,7 +783,7 @@ function formatPlanMessage(plan) {
   if (plan.toRemove.length > 0) {
     lines.push(`🗑️  Channels to REMOVE: ${plan.toRemove.length}`);
     for (const item of plan.toRemove) {
-      lines.push(`   - ${item.channel_name} (${item.channel_id}) from ${item.collection_name}`);
+      lines.push(`   - ${item.channel_name} (${item.channel_id}) from ${item.collection_name} / ${item.customer_name}`);
     }
     lines.push("");
   }
@@ -627,13 +796,13 @@ function formatPlanMessage(plan) {
   }
 
   // Summary
-  if (plan.toAdd.length === 0 && plan.toMove.length === 0 && plan.toRemove.length === 0) {
+  if (plan.toAdd.length === 0 && plan.toMoveCustomers.length === 0 && plan.toRemove.length === 0) {
     lines.push("✅ No changes needed - sheet is already in sync!");
   } else {
     lines.push("SUMMARY:");
-    lines.push(`  Add: ${plan.toAdd.length}`);
-    lines.push(`  Move: ${plan.toMove.length}`);
-    lines.push(`  Remove: ${plan.toRemove.length} ${!CONFIG.INCLUDE_DELETES ? '(skipped)' : ''}`);
+    lines.push(`  Add: ${plan.toAdd.length} channel(s)`);
+    lines.push(`  Move: ${plan.toMoveCustomers.length} customer(s)`);
+    lines.push(`  Remove: ${plan.toRemove.length} channel(s) ${!CONFIG.INCLUDE_DELETES ? '(skipped)' : ''}`);
   }
 
   return lines.join("\n");
@@ -650,13 +819,14 @@ function executePlan(plan, skipDeletes, collectionOwners) {
   const results = {
     addSuccess: 0,
     addFailed: 0,
-    moveSuccess: 0,
-    moveFailed: 0,
+    moveCustomerSuccess: 0,
+    moveCustomerFailed: 0,
     removeSuccess: 0,
     removeFailed: 0,
     removeSkipped: 0,
     // Email tracking
     addedChannels: [],
+    movedCustomers: [],
     removedChannels: [],
     failures: []
   };
@@ -684,10 +854,8 @@ function executePlan(plan, skipDeletes, collectionOwners) {
     if (CONFIG.SET_OWNER) {
       channelObj.owner = collectionOwners[item.collection_id] || '';
     }
-    // Add empty customer object if enabled
-    if (CONFIG.CREATE_EMPTY_CUSTOMER) {
-      channelObj.customer = { type: 'new' };
-    }
+    // Note: Customer association should be handled when adding channels
+    // For now, we don't create empty customer - channels should be added with proper customer
     addsByCollection[item.collection_id].push(channelObj);
   }
 
@@ -705,7 +873,8 @@ function executePlan(plan, skipDeletes, collectionOwners) {
           results.addedChannels.push({
             id: ch.id,
             name: (item && item.channel_name) ? item.channel_name : ch.id,
-            collection: item ? item.collection_name : ''
+            collection: item ? item.collection_name : '',
+            customer: item ? item.customer_name : ''
           });
         }
       } else {
@@ -734,26 +903,36 @@ function executePlan(plan, skipDeletes, collectionOwners) {
     }
   }
 
-  // Execute moves (individual)
-  for (const item of plan.toMove) {
+  // Execute customer moves (individual)
+  for (const item of plan.toMoveCustomers) {
     try {
-      const result = moveChannel(item.channel_id, item.to_collection_id);
+      const result = moveCustomer(item.customer_id, item.to_collection_id, item.version);
       if (result.success) {
-        results.moveSuccess++;
-        Logger.log(`✅ Moved channel ${item.channel_name} (${item.channel_id}) to ${item.to_collection}`);
+        results.moveCustomerSuccess++;
+        Logger.log(`✅ Moved customer ${item.customer_name} (ID: ${item.customer_id}) from ${item.from_collection_name} to ${item.to_collection_name}`);
+        Logger.log(`   ${item.channel_ids.length} channel(s) moved with this customer`);
+
+        // Track for email
+        results.movedCustomers.push({
+          id: item.customer_id,
+          name: item.customer_name,
+          from_collection: item.from_collection_name,
+          to_collection: item.to_collection_name,
+          channel_count: item.channel_ids.length
+        });
       } else {
-        results.moveFailed++;
-        Logger.log(`❌ Failed to move channel ${item.channel_name} (${item.channel_id}): ${result.error}`);
+        results.moveCustomerFailed++;
+        Logger.log(`❌ Failed to move customer ${item.customer_name} (ID: ${item.customer_id}): ${result.error}`);
 
         // Track failure for email
-        results.failures.push(`Move failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
+        results.failures.push(`Move customer failed: ${item.customer_id} - ${item.customer_name}. ${result.error}`);
       }
     } catch (error) {
-      results.moveFailed++;
-      Logger.log(`❌ Error moving channel ${item.channel_name} (${item.channel_id}): ${error.toString()}`);
+      results.moveCustomerFailed++;
+      Logger.log(`❌ Error moving customer ${item.customer_name} (ID: ${item.customer_id}): ${error.toString()}`);
 
       // Track failure for email
-      results.failures.push(`Move error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
+      results.failures.push(`Move customer error: ${item.customer_id} - ${item.customer_name}. ${error.toString()}`);
     }
   }
 
@@ -778,7 +957,8 @@ function executePlan(plan, skipDeletes, collectionOwners) {
         results.removedChannels.push({
           id: item.channel_id,
           name: item.channel_name || item.channel_id,
-          collection: item.collection_name || ''
+          collection: item.collection_name || '',
+          customer: item.customer_name || ''
         });
       } else {
         results.removeFailed++;
@@ -816,11 +996,11 @@ function formatResultMessage(results) {
     lines.push(`❌ Add failed: ${results.addFailed} channel(s)`);
   }
 
-  if (results.moveSuccess > 0) {
-    lines.push(`✅ Moved: ${results.moveSuccess} channel(s)`);
+  if (results.moveCustomerSuccess > 0) {
+    lines.push(`✅ Moved: ${results.moveCustomerSuccess} customer(s)`);
   }
-  if (results.moveFailed > 0) {
-    lines.push(`❌ Move failed: ${results.moveFailed} channel(s)`);
+  if (results.moveCustomerFailed > 0) {
+    lines.push(`❌ Move failed: ${results.moveCustomerFailed} customer(s)`);
   }
 
   if (results.removeSkipped > 0) {
@@ -835,8 +1015,8 @@ function formatResultMessage(results) {
 
   lines.push("");
 
-  const totalActions = results.addSuccess + results.moveSuccess + results.removeSuccess;
-  const totalFailed = results.addFailed + results.moveFailed + results.removeFailed;
+  const totalActions = results.addSuccess + results.moveCustomerSuccess + results.removeSuccess;
+  const totalFailed = results.addFailed + results.moveCustomerFailed + results.removeFailed;
 
   if (totalFailed === 0 && totalActions > 0) {
     lines.push("✅ All actions completed successfully!");
@@ -900,7 +1080,23 @@ function formatChannelLines_(channels) {
     const id = ch.id || '';
     const name = ch.name || '';
     const collection = ch.collection ? ` (${ch.collection})` : '';
-    return `${id} - ${name}${collection}`;
+    const customer = ch.customer ? ` / Customer: ${ch.customer}` : '';
+    return `${id} - ${name}${collection}${customer}`;
+  }).join('\n');
+}
+
+/**
+ * Format moved customers list for email body
+ */
+function formatMovedCustomersLines_(customers) {
+  if (!customers || customers.length === 0) return 'None';
+  return customers.map(function(c) {
+    const id = c.id || '';
+    const name = c.name || '';
+    const from = c.from_collection ? ` from ${c.from_collection}` : '';
+    const to = c.to_collection ? ` to ${c.to_collection}` : '';
+    const channels = c.channel_count !== undefined ? ` (${c.channel_count} channels)` : '';
+    return `${id} - ${name}${from}${to}${channels}`;
   }).join('\n');
 }
 
@@ -932,6 +1128,9 @@ function sendRunEmail_(runData) {
   bodyLines.push('');
   bodyLines.push('Channels Added:');
   bodyLines.push(formatChannelLines_(runData.addedChannels));
+  bodyLines.push('');
+  bodyLines.push('Customers Moved:');
+  bodyLines.push(formatMovedCustomersLines_(runData.movedCustomers));
   bodyLines.push('');
   bodyLines.push('Channels Removed:');
   bodyLines.push(formatChannelLines_(runData.removedChannels));
