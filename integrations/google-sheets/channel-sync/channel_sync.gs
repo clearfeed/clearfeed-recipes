@@ -127,6 +127,10 @@ function syncChannels() {
       safeAlert("Sync Results", resultMessage);
       Logger.log("Channel sync completed");
 
+      // Clear cache after successful sync to ensure next run uses fresh data
+      clearCache();
+      Logger.log("Cache cleared after successful sync");
+
       // Send completion email
       sendRunEmail_({
         startedAt: runStartedAt,
