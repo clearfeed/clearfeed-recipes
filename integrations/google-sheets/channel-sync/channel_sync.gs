@@ -127,9 +127,9 @@ function syncChannels() {
       safeAlert("Sync Results", resultMessage);
       Logger.log("Channel sync completed");
 
-      // Clear cache after successful sync to ensure next run uses fresh data
-      clearCache();
-      Logger.log("Cache cleared after successful sync");
+      // Refresh cache with updated state after successful sync
+      // This keeps cache accurate without requiring slow re-fetches on next run
+      refreshCacheAfterSync();
 
       // Send completion email
       sendRunEmail_({
@@ -423,6 +423,24 @@ function clearCache() {
   scriptProperties.deleteProperty(CACHE_KEYS.CUSTOMERS);
   scriptProperties.deleteProperty(CACHE_KEYS.TIMESTAMP);
   Logger.log("Cache cleared");
+}
+
+/**
+ * Refresh cache with updated data after successful sync
+ * This maintains low latency while keeping cache accurate
+ */
+function refreshCacheAfterSync() {
+  Logger.log("Refreshing cache after successful sync...");
+
+  // Fetch fresh data from API
+  const collections = fetchCollectionsFromAPI();
+  const customers = fetchAllCustomersFromAPI();
+
+  // Update cache with fresh data
+  setCachedData(CACHE_KEYS.COLLECTIONS, collections);
+  setCachedData(CACHE_KEYS.CUSTOMERS, customers);
+
+  Logger.log("Cache refreshed with latest data");
 }
 
 /**
