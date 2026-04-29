@@ -134,11 +134,11 @@ function showLogs() {
 // Cache Functions
 // =============================================================================
 
-// Cache keys for PropertiesService
+// Cache keys for PropertiesService (shared with channel_sync.gs)
 const CACHE_KEYS = {
-  COLLECTIONS: 'cf_pop_collections_cache',
-  CUSTOMERS: 'cf_pop_customers_cache',
-  TIMESTAMP: 'cf_pop_cache_timestamp'
+  COLLECTIONS: 'cf_collections_cache',
+  CUSTOMERS: 'cf_customers_cache',
+  TIMESTAMP: 'cf_cache_timestamp'
 };
 
 /**
