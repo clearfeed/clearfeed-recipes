@@ -630,6 +630,9 @@ function deleteChannel(channelId) {
   const code = response.getResponseCode();
   if (code >= 200 && code < 300) {
     return { success: true };
+  } else if (code === 404) {
+    // Channel doesn't exist or isn't being monitored - treat as success
+    return { success: true };
   } else {
     return {
       success: false,
@@ -639,14 +642,49 @@ function deleteChannel(channelId) {
 }
 
 /**
+ * Fetch a single customer by ID (bypasses cache)
+ * Returns customer object or null
+ */
+function fetchCustomerById(customerId) {
+  const url = `${BASE_URL}/customers/${customerId}`;
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${CONFIG.API_KEY}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json'
+    },
+    muteHttpExceptions: true
+  });
+
+  const code = response.getResponseCode();
+  if (code === 200) {
+    const data = JSON.parse(response.getContentText());
+    return data.customer;
+  }
+  return null;
+}
+
+/**
  * Move a customer to a different collection
+ * Fetches fresh customer data first to get current version
  * Returns {success: boolean, error: string}
  */
 function moveCustomer(customerId, collectionId, version) {
+  // Fetch fresh customer data to get current version
+  const freshCustomer = fetchCustomerById(customerId);
+  if (!freshCustomer) {
+    return {
+      success: false,
+      error: `Failed to fetch customer data for ID ${customerId}`
+    };
+  }
+
   const url = `${BASE_URL}/customers/${customerId}`;
 
   const payload = {
-    version: version,
+    version: freshCustomer.version,  // Use current version from API
     collection_id: collectionId
   };
 
