@@ -17,6 +17,7 @@ const CONFIG = {
   CLEAR_SHEET_BEFORE_WRITE: true, // Set to false to append instead of replace
   CUSTOMER_FETCH_PAGE_SIZE: 5, // Page size for fetching customers (small to avoid bandwidth)
   CUSTOMER_FETCH_DELAY_MS: 5000, // Delay between customer fetch requests (milliseconds)
+  CACHE_DURATION_MINUTES: 60, // Cache duration for collections/customers data (0 = disable cache)
 };
 
 // =============================================================================
@@ -31,6 +32,8 @@ function onOpen() {
   const menu = ui.createMenu('ClearFeed Populate')
     .addItem('📥 Populate Mappings', 'populateMappings')
     .addItem('🧪 Test Connection', 'testConnection')
+    .addSeparator()
+    .addItem('🔄 Refresh Cache (Force Fetch)', 'forceRefreshCache')
     .addSeparator()
     .addItem('📋 View Logs', 'showLogs');
 
@@ -98,7 +101,11 @@ function testConnection() {
     const customers = fetchAllCustomers();
 
     if (collections && customers) {
-      const message = `✅ Connection successful!\n\nFound ${collections.length} collections and ${customers.length} customers in your ClearFeed account.`;
+      const cacheInfo = CONFIG.CACHE_DURATION_MINUTES > 0
+        ? `\n\nCache: ${getCacheAge()} (expires after ${CONFIG.CACHE_DURATION_MINUTES} min)`
+        : '\n\nCache: Disabled';
+
+      const message = `✅ Connection successful!\n\nFound ${collections.length} collections and ${customers.length} customers in your ClearFeed account.${cacheInfo}`;
       safeAlert("Connection Test", message);
       Logger.log("Connection test successful");
     } else {
@@ -124,13 +131,145 @@ function showLogs() {
 }
 
 // =============================================================================
+// Cache Functions
+// =============================================================================
+
+// Cache keys for PropertiesService
+const CACHE_KEYS = {
+  COLLECTIONS: 'cf_pop_collections_cache',
+  CUSTOMERS: 'cf_pop_customers_cache',
+  TIMESTAMP: 'cf_pop_cache_timestamp'
+};
+
+/**
+ * Get cached data from PropertiesService
+ */
+function getCachedData(key) {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const cached = scriptProperties.getProperty(key);
+  if (cached) {
+    try {
+      return JSON.parse(cached);
+    } catch (e) {
+      Logger.log(`Warning: Failed to parse cached data for ${key}`);
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Set cached data in PropertiesService
+ */
+function setCachedData(key, data) {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  scriptProperties.setProperty(key, JSON.stringify(data));
+  // Update timestamp
+  scriptProperties.setProperty(CACHE_KEYS.TIMESTAMP, new Date().getTime().toString());
+}
+
+/**
+ * Check if cache is fresh (not expired)
+ */
+function isCacheFresh() {
+  if (CONFIG.CACHE_DURATION_MINUTES <= 0) {
+    return false; // Cache disabled
+  }
+
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const timestamp = scriptProperties.getProperty(CACHE_KEYS.TIMESTAMP);
+
+  if (!timestamp) {
+    return false; // No cache exists
+  }
+
+  const cacheAge = new Date().getTime() - parseInt(timestamp);
+  const cacheDuration = CONFIG.CACHE_DURATION_MINUTES * 60 * 1000;
+
+  return cacheAge < cacheDuration;
+}
+
+/**
+ * Get cache age in human-readable format
+ */
+function getCacheAge() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const timestamp = scriptProperties.getProperty(CACHE_KEYS.TIMESTAMP);
+
+  if (!timestamp) {
+    return "No cache";
+  }
+
+  const cacheAge = new Date().getTime() - parseInt(timestamp);
+  const minutes = Math.floor(cacheAge / 60000);
+
+  if (minutes < 1) {
+    return "Just now";
+  } else if (minutes < 60) {
+    return `${minutes} minute(s) ago`;
+  } else {
+    const hours = Math.floor(minutes / 60);
+    return `${hours} hour(s) ago`;
+  }
+}
+
+/**
+ * Clear all cached data
+ */
+function clearCache() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  scriptProperties.deleteProperty(CACHE_KEYS.COLLECTIONS);
+  scriptProperties.deleteProperty(CACHE_KEYS.CUSTOMERS);
+  scriptProperties.deleteProperty(CACHE_KEYS.TIMESTAMP);
+  Logger.log("Cache cleared");
+}
+
+/**
+ * Force refresh cache - fetches fresh data from API
+ */
+function forceRefreshCache() {
+  clearCache();
+
+  try {
+    Logger.log("Force refreshing cache...");
+    const collections = fetchCollectionsFromAPI();
+    const customers = fetchAllCustomersFromAPI();
+
+    setCachedData(CACHE_KEYS.COLLECTIONS, collections);
+    setCachedData(CACHE_KEYS.CUSTOMERS, customers);
+
+    safeAlert("Cache Refreshed", `Successfully refreshed cache:\n- ${collections.length} collections\n- ${customers.length} customers`);
+    Logger.log("Cache refresh completed");
+  } catch (error) {
+    safeAlert("Refresh Failed", `Error: ${error.toString()}`);
+    Logger.log(`Cache refresh failed: ${error.toString()}`);
+  }
+}
+
+// =============================================================================
 // Data Fetching Functions
 // =============================================================================
 
 /**
- * Fetch all collections with their channels from ClearFeed
+ * Fetch all collections (with caching)
  */
 function fetchCollections() {
+  if (isCacheFresh()) {
+    const cached = getCachedData(CACHE_KEYS.COLLECTIONS);
+    if (cached) {
+      Logger.log(`Using cached collections data (${getCacheAge()})`);
+      return cached;
+    }
+  }
+  const collections = fetchCollectionsFromAPI();
+  setCachedData(CACHE_KEYS.COLLECTIONS, collections);
+  return collections;
+}
+
+/**
+ * Fetch all collections from API
+ */
+function fetchCollectionsFromAPI() {
   const url = `${BASE_URL}/collections?include=channels`;
 
   const response = UrlFetchApp.fetch(url, {
@@ -154,10 +293,26 @@ function fetchCollections() {
 }
 
 /**
- * Fetch all customers with pagination
- * Uses small page size and delays to avoid bandwidth quota errors
+ * Fetch all customers (with caching)
  */
 function fetchAllCustomers() {
+  if (isCacheFresh()) {
+    const cached = getCachedData(CACHE_KEYS.CUSTOMERS);
+    if (cached) {
+      Logger.log(`Using cached customers data (${getCacheAge()})`);
+      return cached;
+    }
+  }
+  const customers = fetchAllCustomersFromAPI();
+  setCachedData(CACHE_KEYS.CUSTOMERS, customers);
+  return customers;
+}
+
+/**
+ * Fetch all customers from API with pagination
+ * Uses small page size and delays to avoid bandwidth quota errors
+ */
+function fetchAllCustomersFromAPI() {
   const allCustomers = [];
   let nextCursor = null;
   const PAGE_SIZE = CONFIG.CUSTOMER_FETCH_PAGE_SIZE || 5;
