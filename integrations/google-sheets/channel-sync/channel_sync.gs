@@ -40,8 +40,6 @@ function onOpen() {
     .addItem('🔄 Sync Channels', 'syncChannels')
     .addItem('🧪 Test Connection', 'testClearfeedConnection')
     .addSeparator()
-    .addItem('🔄 Refresh Cache (Force Fetch)', 'forceRefreshCache')
-    .addSeparator()
     .addItem('📋 View Logs', 'showLogs');
 
   menu.addToUi();
@@ -180,11 +178,7 @@ function testClearfeedConnection() {
     const customers = fetchAllCustomers();
 
     if (collections && customers) {
-      const cacheInfo = CONFIG.CACHE_DURATION_MINUTES > 0
-        ? `\n\nCache: ${getCacheAge()} (expires after ${CONFIG.CACHE_DURATION_MINUTES} min)`
-        : '\n\nCache: Disabled';
-
-      const message = `✅ Connection successful!\n\nFound ${collections.length} collections and ${customers.length} customers in your ClearFeed account.${cacheInfo}`;
+      const message = `✅ Connection successful!\n\nFound ${collections.length} collections and ${customers.length} customers in your ClearFeed account.`;
       safeAlert("Connection Test", message);
       Logger.log("Connection test successful");
     } else {
@@ -425,28 +419,6 @@ function clearCache() {
   scriptProperties.deleteProperty(CACHE_KEYS.CUSTOMERS);
   scriptProperties.deleteProperty(CACHE_KEYS.TIMESTAMP);
   Logger.log("Cache cleared");
-}
-
-/**
- * Force refresh cache - fetches fresh data from API
- */
-function forceRefreshCache() {
-  clearCache();
-
-  try {
-    Logger.log("Force refreshing cache...");
-    const collections = fetchCollectionsFromAPI();
-    const customers = fetchAllCustomersFromAPI();
-
-    setCachedData(CACHE_KEYS.COLLECTIONS, collections);
-    setCachedData(CACHE_KEYS.CUSTOMERS, customers);
-
-    safeAlert("Cache Refreshed", `Successfully refreshed cache:\n- ${collections.length} collections\n- ${customers.length} customers`);
-    Logger.log("Cache refresh completed");
-  } catch (error) {
-    safeAlert("Refresh Failed", `Error: ${error.toString()}`);
-    Logger.log(`Cache refresh failed: ${error.toString()}`);
-  }
 }
 
 /**
