@@ -5,11 +5,12 @@ A Google Apps Script that syncs collection-to-customer-to-channel mappings from 
 ## Features
 
 - **Bulk channel management** - Add, move, or remove multiple channels at once
+- **Smart movement logic** - Automatically moves entire customers or individual channels as needed
 - **Customer-centric operations** - Move customers between collections (all their channels move together)
 - **Plan preview** - See exactly what changes will be made before executing
 - **Safe by default** - Channel deletion is disabled by default (must be explicitly enabled)
 - **Non-interactive mode support** - Works with Google Sheets triggers for automation
-- **Flexible configuration** - All settings managed in the sheet itself
+- **Email notifications** - Optional email summaries after each sync run
 
 ## Prerequisites
 
@@ -74,8 +75,8 @@ const CONFIG = {
   SPREADSHEET_ID: "", // Leave empty to use current spreadsheet
   CREATE_EMPTY_CUSTOMER: false, // Whether to create an empty customer when adding channels
   SET_OWNER: false, // Whether to set the owner field when adding channels
-  CUSTOMER_FETCH_PAGE_SIZE: 5, // Page size for fetching customers (small to avoid bandwidth)
-  CUSTOMER_FETCH_DELAY_MS: 5000, // Delay between customer fetch requests (milliseconds)
+  CUSTOMER_FETCH_PAGE_SIZE: 100, // Page size for fetching customers
+  CUSTOMER_FETCH_DELAY_MS: 500, // Delay between customer fetch requests (milliseconds)
 };
 ```
 
@@ -83,19 +84,32 @@ const CONFIG = {
 - Set `API_KEY` to your ClearFeed API token
 
 **Optional:**
-- Change `SHEET_NAME` if your spreadsheet has multiple sheets
+- Change `SHEET_NAME` if your spreadsheet has multiple sheets (if there's only one sheet, it's used automatically)
 - Set `INCLUDE_DELETES` to `true` to enable channel deletion (use with caution!)
 - Set `SPREADSHEET_ID` to use a different spreadsheet
 - Adjust `CUSTOMER_FETCH_PAGE_SIZE` and `CUSTOMER_FETCH_DELAY_MS` if you encounter bandwidth issues
 
-### Step 5: Test Connection
+### Step 5: Configure Email Notifications (Optional)
+
+To receive email summaries after each sync run, update the `EMAIL_CONFIG` section:
+
+```javascript
+const EMAIL_CONFIG = {
+  TO: "", // Recipient email address (leave empty to disable)
+  FROM: "noreply@example.com", // Sender email address
+  SUBJECT_PREFIX: "ClearFeed Channel Sync - ",
+  SENDER_NAME: "ClearFeed Sync"
+};
+```
+
+### Step 6: Test Connection
 
 1. Go back to your Google Sheet
 2. Refresh the page (a new menu should appear)
 3. Click **ClearFeed Channel Sync** > **Test Connection**
 4. You should see a success message with the number of collections and customers found
 
-### Step 6: Run the Sync
+### Step 7: Run the Sync
 
 1. Click **ClearFeed Channel Sync** > **Sync Channels**
 2. Review the sync plan that shows what will be added, moved, or removed
@@ -132,23 +146,36 @@ Use this to sync from a different spreadsheet than where the script is installed
 - **Default**: `""` (use the current spreadsheet)
 - **Example**: `"1BxiMvs0XRA5nFMdK..."` (found in the spreadsheet URL)
 
+### CREATE_EMPTY_CUSTOMER
+
+Whether to create an empty customer object when adding channels.
+
+- **Default**: `false`
+- **Set to `true`**: New channels will be associated with a new empty customer object
+
+### SET_OWNER
+
+Whether to automatically set the channel owner based on the collection's most common owner.
+
+- **Default**: `false`
+- **Set to `true`**: The `owner` field will be set on newly added channels
+
 ### CUSTOMER_FETCH_PAGE_SIZE
 
 Page size for fetching customers from the API.
 
-- **Default**: `5` (small pages to avoid bandwidth quota issues)
+- **Default**: `100`
 - **Range**: 1-100
 
-If you encounter "Bandwidth quota exceeded" errors, reduce this value.
+Reduce this if you encounter "Bandwidth quota exceeded" errors.
 
 ### CUSTOMER_FETCH_DELAY_MS
 
 Delay in milliseconds between customer fetch requests.
 
-- **Default**: `5000` (5 seconds)
-- **Range**: Any positive integer
+- **Default**: `500` (0.5 seconds)
 
-If you encounter rate limiting, increase this value.
+Increase this if you encounter rate limiting.
 
 ## Sheet Format
 
@@ -167,54 +194,6 @@ Your sheet must have the following columns:
 - The **Channel Name** column is optional
 - Empty rows will be ignored
 - Collection and Customer names are case-insensitive
-
-## How It Works
-
-### Customer-Centric Model
-
-This script uses ClearFeed's Customer-Centric Inbox model:
-
-```
-Collections → Customers → Channels
-```
-
-- **Collections** contain **Customers**
-- **Customers** contain **Channels**
-- Moving a customer moves ALL their channels
-
-### Operations
-
-1. **Add Channels**: Channels not in ClearFeed are added to the specified collection
-
-2. **Move Customers**: When a customer's channels should be in a different collection, the entire customer object is moved (along with all their channels)
-
-3. **Remove Channels**: Channels in ClearFeed but not in the sheet can be removed (if `INCLUDE_DELETES = true`)
-
-### Sync Plan Example
-
-```
-CHANNEL SYNC PLAN
-==================
-
-📝 Channels to ADD: 2
-   + #support-tickets (C07AA9J9LJX) → Support / Acme Corp
-   + #eng-help (C06BB9H9HKW) → Engineering / Acme Corp
-
-🔄 Customers to MOVE: 1
-   ~ Customer: Acme Corp
-     Support → Sales
-     Channels moving: 5 channel(s)
-
-🗑️  Channels to REMOVE: 1
-   - #old-channel (C04DD7F7FIU) from Support / Globex Inc
-
-⚠️  WARNING: Deletes are SKIPPED (CONFIG.INCLUDE_DELETES = false)
-
-SUMMARY:
-  Add: 2 channel(s)
-  Move: 1 customer(s)
-  Remove: 1 channel(s) (skipped)
-```
 
 ## How to Find Channel IDs
 
@@ -240,6 +219,59 @@ The **ClearFeed Channel Sync** menu provides the following options:
 | 🧪 Test Connection | Validates your API token and shows collection/customer count |
 | 📋 View Logs | Instructions for viewing detailed logs |
 
+## Understanding the Sync Plan
+
+When you run "Sync Channels", you'll see a plan like this:
+
+```
+CHANNEL SYNC PLAN
+==================
+
+📝 Channels to ADD: 2
+   + #support-tickets (C07AA9J9LJX) → Support / Acme Corp
+   + #eng-help (C06BB9H9HKW) → Engineering / Acme Corp
+
+🔄 Customers to MOVE: 1
+   ~ Customer: Globex Inc
+     Sales → Enterprise
+     Channels moving: 5 channel(s)
+
+🔄 Channels to MOVE: 1
+   ~ #billing-questions (C05CC8G8GJV)
+     Support → Sales
+
+🗑️  Channels to REMOVE: 1
+   - #old-channel (C04DD7F7FIU) from Support / Legacy Corp
+
+⚠️  WARNING: Deletes are SKIPPED (CONFIG.INCLUDE_DELETES = false)
+
+SUMMARY:
+  Add: 2 channel(s)
+  Move Customers: 1 customer(s)
+  Move Channels: 1 channel(s)
+  Remove: 1 channel(s) (skipped)
+```
+
+### What Each Action Means
+
+- **Add**: The channel doesn't exist in ClearFeed and will be added to the specified collection and customer
+- **Move Customers**: ALL channels belonging to a customer will move to a different collection (more efficient)
+- **Move Channels**: Individual channels will move to a different collection (when only some channels need to move)
+- **Remove**: The channel exists in ClearFeed but not in your sheet (requires `INCLUDE_DELETES=true`)
+
+### Collection Not Found Warning
+
+If a collection name in your sheet doesn't exist in ClearFeed:
+
+```
+⚠️  Collections NOT FOUND in ClearFeed:
+   - Unknown Collection
+
+Channels in these collections will be SKIPPED.
+```
+
+Fix this by correcting the collection name in your sheet.
+
 ## Use Cases
 
 ### 1. Initial Setup
@@ -262,7 +294,18 @@ Moving a customer (and all their channels) to a different collection:
 
 Running sync will move the **Globex Inc** customer (and all its channels) to the **Enterprise** collection.
 
-### 3. Removing Channels (with INCLUDE_DELETES=true)
+### 3. Partial Customer Moves
+
+Moving only some of a customer's channels to a different collection:
+
+| Collection | Customer | Channel Name | Channel ID |
+|------------|----------|--------------|------------|
+| Enterprise | Acme Corp | #premium-support | C05FF5F5FZ2 |
+| Support | Acme Corp | #standard-support | C06GG6G6GA3 |
+
+Running sync will move only `#premium-support` to Enterprise, while keeping `#standard-support` in Support.
+
+### 4. Removing Channels (with INCLUDE_DELETES=true)
 
 To remove a channel from ClearFeed, delete its row from the sheet. When `INCLUDE_DELETES=true`, the channel will be removed on the next sync.
 
@@ -282,6 +325,36 @@ You can set up a time-based trigger to run the sync automatically:
 
 **Note:** When running from a trigger, the confirmation dialog is skipped and the sync executes automatically.
 
+## FAQ
+
+### Q: What's the difference between moving a customer vs. moving channels?
+
+A: When ALL of a customer's channels need to move, the script moves the entire customer object (more efficient). When only SOME channels need to move, individual channels are moved instead.
+
+### Q: What happens if I have the same channel in multiple rows?
+
+A: The last occurrence in the sheet will determine which collection and customer the channel belongs to.
+
+### Q: Can I sync to multiple ClearFeed accounts?
+
+A: No, the API key connects to a single ClearFeed account. For multiple accounts, create separate spreadsheets with different API keys.
+
+### Q: My sync says "Collections NOT FOUND". What do I do?
+
+A: Check that the collection names in your sheet exactly match the collection names in ClearFeed (case-insensitive, but spelling must match).
+
+### Q: Can I undo a sync?
+
+A: No, there's no automatic undo. However, you can manually reverse changes by updating the sheet and syncing again.
+
+### Q: What happens if a channel ID is invalid?
+
+A: Invalid channel IDs are logged and skipped. Check the logs for details.
+
+### Q: Do I need to create customers in ClearFeed before syncing?
+
+A: No, the script can add channels to existing customers. Use `CREATE_EMPTY_CUSTOMER=true` to create new customer objects automatically.
+
 ## Troubleshooting
 
 ### "Bandwidth quota exceeded"
@@ -300,20 +373,29 @@ You can set up a time-based trigger to run the sync automatically:
 
 ### "No channel mappings found in the sheet"
 
-**Solution:** Ensure your sheet has at least one data row below the header row, and all four columns are filled (Collection, Customer, Channel Name optional, Channel ID).
+**Solution:** Ensure your sheet has at least one data row below the header row, and Collection, Customer, and Channel ID are filled.
+
+### "Version conflict: Customer was modified by another process"
+
+**Solution:** Retry the sync. The script automatically fetches the latest version before moving customers.
 
 ### Collections or customers not found warning
 
 **Solution:** Verify the exact spelling of collection and customer names in ClearFeed. The comparison is case-insensitive but must match otherwise.
 
-## API Endpoints Used
+## Data Structure
 
-The script uses the ClearFeed REST API:
+The script uses the ClearFeed Customer-Centric Inbox model:
 
+- **Collections** contain **Customers**
+- **Customers** contain **Channels**
+
+API endpoints used:
 - **GET** `/collections?include=channels` - Fetch all collections with their channels
-- **GET** `/customers` - Fetch all customers (with pagination)
+- **GET** `/customers` - Fetch all customers
 - **POST** `/collections/{id}/channels` - Add channels to a collection
 - **PATCH** `/customers/{id}` - Move a customer to a different collection
+- **PATCH** `/channels/{id}` - Move a channel to a different collection
 - **DELETE** `/channels/{id}` - Remove a channel
 
 For full API documentation, see [ClearFeed API Docs](https://docs.clearfeed.ai/api).
@@ -326,7 +408,7 @@ For full API documentation, see [ClearFeed API Docs](https://docs.clearfeed.ai/a
 
 **Best Practices:**
 - Don't share your spreadsheet publicly
-- Consider creating a service account with limited permissions
+- Limit edit access to trusted users
 - Regularly rotate your API token
 
 ## License
