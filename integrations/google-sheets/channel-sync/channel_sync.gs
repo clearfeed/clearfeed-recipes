@@ -176,7 +176,7 @@ function testClearfeedConnection() {
     const collections = fetchCollections();
 
     if (collections) {
-      const message = `✅ Connection successful!\n\nFound ${collections.length} collections in your ClearFeed account.\n\nNote: Customer data is not fetched during connection test to keep it fast.`;
+      const message = `✅ Connection successful!\n\nFound ${collections.length} collections in your ClearFeed account.`;
       safeAlert("Connection Test", message);
       Logger.log("Connection test successful");
     } else {
