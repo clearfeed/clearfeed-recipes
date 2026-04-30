@@ -5,8 +5,7 @@ A Google Apps Script that syncs collection-to-customer-to-channel mappings from 
 ## Features
 
 - **Bulk channel management** - Add, move, or remove multiple channels at once
-- **Smart movement logic** - Automatically moves entire customers or individual channels as needed
-- **Customer-centric operations** - Move customers between collections (all their channels move together)
+- **Smart customer movements** - Automatically moves entire customers or individual channels as needed
 - **Plan preview** - See exactly what changes will be made before executing
 - **Safe by default** - Channel deletion is disabled by default (must be explicitly enabled)
 - **Non-interactive mode support** - Works with Google Sheets triggers for automation
@@ -48,7 +47,8 @@ Example data:
 
 **Important Notes:**
 - The "Customer" column specifies which customer object owns the channel
-- Moving a customer to a different collection moves ALL their channels
+- When ALL of a customer's channels move to a different collection, the entire customer object moves (more efficient)
+- When only SOME channels move, individual channels are moved instead
 - The "Channel Name" column is optional - names are fetched from ClearFeed API if not provided
 
 ### Step 2: Open Apps Script Editor
@@ -87,6 +87,8 @@ const CONFIG = {
 - Change `SHEET_NAME` if your spreadsheet has multiple sheets (if there's only one sheet, it's used automatically)
 - Set `INCLUDE_DELETES` to `true` to enable channel deletion (use with caution!)
 - Set `SPREADSHEET_ID` to use a different spreadsheet
+- Set `CREATE_EMPTY_CUSTOMER` to `true` to create empty customer objects when adding channels
+- Set `SET_OWNER` to `true` to automatically set channel owner from the collection
 - Adjust `CUSTOMER_FETCH_PAGE_SIZE` and `CUSTOMER_FETCH_DELAY_MS` if you encounter bandwidth issues
 
 ### Step 5: Configure Email Notifications (Optional)
@@ -95,7 +97,7 @@ To receive email summaries after each sync run, update the `EMAIL_CONFIG` sectio
 
 ```javascript
 const EMAIL_CONFIG = {
-  TO: "", // Recipient email address (leave empty to disable)
+  TO: "", // Recipient email address (leave empty to disable emails)
   FROM: "noreply@example.com", // Sender email address
   SUBJECT_PREFIX: "ClearFeed Channel Sync - ",
   SENDER_NAME: "ClearFeed Sync"
@@ -191,7 +193,7 @@ Your sheet must have the following columns:
 **Important:**
 - The first row must contain headers
 - **Collection**, **Customer**, and **Channel ID** are required
-- The **Channel Name** column is optional
+- The **Channel Name** column is optional - if not provided, channel names will be fetched from ClearFeed API automatically
 - Empty rows will be ignored
 - Collection and Customer names are case-insensitive
 
@@ -255,8 +257,8 @@ SUMMARY:
 ### What Each Action Means
 
 - **Add**: The channel doesn't exist in ClearFeed and will be added to the specified collection and customer
-- **Move Customers**: ALL channels belonging to a customer will move to a different collection (more efficient)
-- **Move Channels**: Individual channels will move to a different collection (when only some channels need to move)
+- **Move Customers**: ALL channels belonging to a customer will move to a different collection (happens automatically when all channels need to move)
+- **Move Channels**: Individual channels will move to a different collection (happens when only some channels need to move)
 - **Remove**: The channel exists in ClearFeed but not in your sheet (requires `INCLUDE_DELETES=true`)
 
 ### Collection Not Found Warning
@@ -329,7 +331,7 @@ You can set up a time-based trigger to run the sync automatically:
 
 ### Q: What's the difference between moving a customer vs. moving channels?
 
-A: When ALL of a customer's channels need to move, the script moves the entire customer object (more efficient). When only SOME channels need to move, individual channels are moved instead.
+A: When ALL of a customer's channels need to move to a different collection, the script moves the entire customer object (more efficient). When only SOME channels need to move, individual channels are moved instead.
 
 ### Q: What happens if I have the same channel in multiple rows?
 
@@ -385,7 +387,7 @@ A: No, the script can add channels to existing customers. Use `CREATE_EMPTY_CUST
 
 ## Data Structure
 
-The script uses the ClearFeed Customer-Centric Inbox model:
+The script uses ClearFeed's Customer-Centric Inbox model:
 
 - **Collections** contain **Customers**
 - **Customers** contain **Channels**
