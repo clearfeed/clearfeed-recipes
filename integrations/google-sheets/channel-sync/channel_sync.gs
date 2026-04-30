@@ -9,8 +9,8 @@ const CONFIG = {
   SPREADSHEET_ID: "", // Leave empty to use current spreadsheet, or specify ID
   CREATE_EMPTY_CUSTOMER: false, // Whether to create an empty customer object when adding channels
   SET_OWNER: false, // Whether to set the owner field when adding channels
-  CUSTOMER_FETCH_PAGE_SIZE: 5, // Page size for fetching customers (small to avoid bandwidth issues)
-  CUSTOMER_FETCH_DELAY_MS: 5000, // Delay between customer fetch requests (milliseconds)
+  CUSTOMER_FETCH_PAGE_SIZE: 100, // Page size for fetching customers (higher = faster, fewer API calls)
+  CUSTOMER_FETCH_DELAY_MS: 500, // Delay between customer fetch requests (milliseconds)
 };
 
 const BASE_URL = "https://api.clearfeed.app/v1/rest";
@@ -174,10 +174,9 @@ function testClearfeedConnection() {
     }
 
     const collections = fetchCollections();
-    const customers = fetchAllCustomers();
 
-    if (collections && customers) {
-      const message = `✅ Connection successful!\n\nFound ${collections.length} collections and ${customers.length} customers in your ClearFeed account.`;
+    if (collections) {
+      const message = `✅ Connection successful!\n\nFound ${collections.length} collections in your ClearFeed account.\n\nNote: Customer data is not fetched during connection test to keep it fast.`;
       safeAlert("Connection Test", message);
       Logger.log("Connection test successful");
     } else {
