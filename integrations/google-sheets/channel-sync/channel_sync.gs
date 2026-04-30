@@ -11,7 +11,6 @@ const CONFIG = {
   SET_OWNER: false, // Whether to set the owner field when adding channels
   CUSTOMER_FETCH_PAGE_SIZE: 5, // Page size for fetching customers (small to avoid bandwidth issues)
   CUSTOMER_FETCH_DELAY_MS: 5000, // Delay between customer fetch requests (milliseconds)
-  CACHE_DURATION_MINUTES: 60, // Cache duration for collections/customers data (0 = disable cache)
 };
 
 const BASE_URL = "https://api.clearfeed.app/v1/rest";
@@ -126,10 +125,6 @@ function syncChannels() {
       const resultMessage = formatResultMessage(results);
       safeAlert("Sync Results", resultMessage);
       Logger.log("Channel sync completed");
-
-      // Refresh cache with updated state after successful sync
-      // This keeps cache accurate without requiring slow re-fetches on next run
-      refreshCacheAfterSync();
 
       // Send completion email
       sendRunEmail_({
@@ -335,141 +330,10 @@ function normalizeCustomerName(name) {
 // API Functions
 // =============================================================================
 
-// Cache keys for PropertiesService
-const CACHE_KEYS = {
-  COLLECTIONS: 'cf_collections_cache',
-  CUSTOMERS: 'cf_customers_cache',
-  TIMESTAMP: 'cf_cache_timestamp'
-};
-
 /**
- * Get cached data from PropertiesService
- */
-function getCachedData(key) {
-  const scriptProperties = PropertiesService.getScriptProperties();
-  const cached = scriptProperties.getProperty(key);
-  if (cached) {
-    try {
-      return JSON.parse(cached);
-    } catch (e) {
-      Logger.log(`Warning: Failed to parse cached data for ${key}`);
-      return null;
-    }
-  }
-  return null;
-}
-
-/**
- * Set cached data in PropertiesService
- */
-function setCachedData(key, data) {
-  const scriptProperties = PropertiesService.getScriptProperties();
-  scriptProperties.setProperty(key, JSON.stringify(data));
-  // Update timestamp
-  scriptProperties.setProperty(CACHE_KEYS.TIMESTAMP, new Date().getTime().toString());
-}
-
-/**
- * Check if cache is fresh (not expired)
- */
-function isCacheFresh() {
-  if (CONFIG.CACHE_DURATION_MINUTES <= 0) {
-    return false; // Cache disabled
-  }
-
-  const scriptProperties = PropertiesService.getScriptProperties();
-  const timestamp = scriptProperties.getProperty(CACHE_KEYS.TIMESTAMP);
-
-  if (!timestamp) {
-    return false; // No cache exists
-  }
-
-  const cacheAge = new Date().getTime() - parseInt(timestamp);
-  const cacheDuration = CONFIG.CACHE_DURATION_MINUTES * 60 * 1000;
-
-  return cacheAge < cacheDuration;
-}
-
-/**
- * Get cache age in human-readable format
- */
-function getCacheAge() {
-  const scriptProperties = PropertiesService.getScriptProperties();
-  const timestamp = scriptProperties.getProperty(CACHE_KEYS.TIMESTAMP);
-
-  if (!timestamp) {
-    return "No cache";
-  }
-
-  const cacheAge = new Date().getTime() - parseInt(timestamp);
-  const minutes = Math.floor(cacheAge / 60000);
-
-  if (minutes < 1) {
-    return "Just now";
-  } else if (minutes < 60) {
-    return `${minutes} minute(s) ago`;
-  } else {
-    const hours = Math.floor(minutes / 60);
-    return `${hours} hour(s) ago`;
-  }
-}
-
-/**
- * Clear all cached data
- */
-function clearCache() {
-  const scriptProperties = PropertiesService.getScriptProperties();
-  scriptProperties.deleteProperty(CACHE_KEYS.COLLECTIONS);
-  scriptProperties.deleteProperty(CACHE_KEYS.CUSTOMERS);
-  scriptProperties.deleteProperty(CACHE_KEYS.TIMESTAMP);
-  Logger.log("Cache cleared");
-}
-
-/**
- * Refresh cache with updated data after successful sync
- * This maintains low latency while keeping cache accurate
- */
-function refreshCacheAfterSync() {
-  Logger.log("Refreshing cache after successful sync...");
-
-  // Fetch fresh data from API
-  const collections = fetchCollectionsFromAPI();
-  const customers = fetchAllCustomersFromAPI();
-
-  // Update cache with fresh data
-  setCachedData(CACHE_KEYS.COLLECTIONS, collections);
-  setCachedData(CACHE_KEYS.CUSTOMERS, customers);
-
-  Logger.log("Cache refreshed with latest data");
-}
-
-/**
- * Fetch all collections (with caching)
- * Returns cached data if fresh, otherwise fetches from API
+ * Fetch all collections with their channels from ClearFeed
  */
 function fetchCollections() {
-  // Check cache first
-  if (isCacheFresh()) {
-    const cached = getCachedData(CACHE_KEYS.COLLECTIONS);
-    if (cached) {
-      Logger.log(`Using cached collections data (${getCacheAge()})`);
-      return cached;
-    }
-  }
-
-  // Fetch from API
-  const collections = fetchCollectionsFromAPI();
-
-  // Cache the results
-  setCachedData(CACHE_KEYS.COLLECTIONS, collections);
-
-  return collections;
-}
-
-/**
- * Fetch all collections with their channels from ClearFeed API
- */
-function fetchCollectionsFromAPI() {
   const url = `${BASE_URL}/collections?include=channels`;
 
   const response = UrlFetchApp.fetch(url, {
@@ -493,33 +357,10 @@ function fetchCollectionsFromAPI() {
 }
 
 /**
- * Fetch all customers (with caching)
- * Returns cached data if fresh, otherwise fetches from API
- */
-function fetchAllCustomers() {
-  // Check cache first
-  if (isCacheFresh()) {
-    const cached = getCachedData(CACHE_KEYS.CUSTOMERS);
-    if (cached) {
-      Logger.log(`Using cached customers data (${getCacheAge()})`);
-      return cached;
-    }
-  }
-
-  // Fetch from API
-  const customers = fetchAllCustomersFromAPI();
-
-  // Cache the results
-  setCachedData(CACHE_KEYS.CUSTOMERS, customers);
-
-  return customers;
-}
-
-/**
  * Fetch all customers with pagination from ClearFeed API
  * Uses small page size and delays to avoid bandwidth quota errors
  */
-function fetchAllCustomersFromAPI() {
+function fetchAllCustomers() {
   const allCustomers = [];
   let nextCursor = null;
   const PAGE_SIZE = CONFIG.CUSTOMER_FETCH_PAGE_SIZE || 5;
@@ -568,6 +409,31 @@ function fetchAllCustomersFromAPI() {
 
   Logger.log(`Completed fetching ${allCustomers.length} customers in ${pageCount} pages`);
   return allCustomers;
+}
+
+/**
+ * Fetch a single customer by ID
+ * Returns customer object or null
+ */
+function fetchCustomerById(customerId) {
+  const url = `${BASE_URL}/customers/${customerId}`;
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${CONFIG.API_KEY}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json'
+    },
+    muteHttpExceptions: true
+  });
+
+  const code = response.getResponseCode();
+  if (code === 200) {
+    const data = JSON.parse(response.getContentText());
+    return data.customer;
+  }
+  return null;
 }
 
 /**
@@ -635,60 +501,6 @@ function moveChannel(channelId, collectionId) {
 }
 
 /**
- * Delete a channel from ClearFeed
- * Returns {success: boolean, error: string}
- */
-function deleteChannel(channelId) {
-  const url = `${BASE_URL}/channels/${channelId}`;
-
-  const response = UrlFetchApp.fetch(url, {
-    method: 'DELETE',
-    headers: {
-      'Authorization': `Bearer ${CONFIG.API_KEY}`
-    },
-    muteHttpExceptions: true
-  });
-
-  const code = response.getResponseCode();
-  if (code >= 200 && code < 300) {
-    return { success: true };
-  } else if (code === 404) {
-    // Channel doesn't exist or isn't being monitored - treat as success
-    return { success: true };
-  } else {
-    return {
-      success: false,
-      error: `API error (${code}): ${response.getContentText()}`
-    };
-  }
-}
-
-/**
- * Fetch a single customer by ID (bypasses cache)
- * Returns customer object or null
- */
-function fetchCustomerById(customerId) {
-  const url = `${BASE_URL}/customers/${customerId}`;
-
-  const response = UrlFetchApp.fetch(url, {
-    method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${CONFIG.API_KEY}`,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json'
-    },
-    muteHttpExceptions: true
-  });
-
-  const code = response.getResponseCode();
-  if (code === 200) {
-    const data = JSON.parse(response.getContentText());
-    return data.customer;
-  }
-  return null;
-}
-
-/**
  * Move a customer to a different collection
  * Fetches fresh customer data first to get current version
  * Returns {success: boolean, error: string}
@@ -728,6 +540,32 @@ function moveCustomer(customerId, collectionId, version) {
       success: false,
       error: `Version conflict: Customer was modified by another process. Please retry.`
     };
+  } else {
+    return {
+      success: false,
+      error: `API error (${code}): ${response.getContentText()}`
+    };
+  }
+}
+
+/**
+ * Delete a channel from ClearFeed
+ * Returns {success: boolean, error: string}
+ */
+function deleteChannel(channelId) {
+  const url = `${BASE_URL}/channels/${channelId}`;
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'DELETE',
+    headers: {
+      'Authorization': `Bearer ${CONFIG.API_KEY}`
+    },
+    muteHttpExceptions: true
+  });
+
+  const code = response.getResponseCode();
+  if (code >= 200 && code < 300) {
+    return { success: true };
   } else {
     return {
       success: false,
@@ -811,7 +649,7 @@ function generateActionPlan(sheetData, collections, customers) {
   }
 
   // Build desired state from sheet
-  const desiredChannelToCollectionCustomer = {}; // channel_id -> {collection_id, customer_name}
+  const desiredChannelToCollectionCustomer = {}; // channel_id -> {collection_id, customer_name, _normalized_customer}
   const collectionsNotFound = new Set();
   const channelInfo = {}; // channel_id -> {name, collection_name, customer_name}
 
@@ -842,7 +680,8 @@ function generateActionPlan(sheetData, collections, customers) {
   // Generate plan
   const plan = {
     toAdd: [],
-    toMoveCustomers: [], // Moving customers between collections
+    toMove: [],           // Individual channel moves (partial customer movements)
+    toMoveCustomers: [],  // Full customer movements
     toRemove: [],
     collectionsNotFound: Array.from(collectionsNotFound)
   };
@@ -861,7 +700,7 @@ function generateActionPlan(sheetData, collections, customers) {
   }
 
   // Build customer movement plan: track which customers need to move to which collections
-  // Key: customer_id, Value: {from_collection_id, to_collection_id, customer_name, channel_ids}
+  // Key: customer_id, Value: {from_collection_id, to_collection_id, customer_name, channel_ids, channels_moving}
   const customerMovements = {};
 
   for (const [channelId, desiredInfo] of Object.entries(desiredChannelToCollectionCustomer)) {
@@ -892,16 +731,32 @@ function generateActionPlan(sheetData, collections, customers) {
             from_collection_name: actualInfo.collection_name,
             to_collection_id: desiredCollectionId,
             to_collection_name: channelInfo[channelId].collection_name,
-            channel_ids: customer.channel_ids
+            all_channels_count: customer.channel_ids.length,
+            channels_moving: []
           };
         }
+        customerMovements[targetCustomerId].channels_moving.push(channelId);
       }
     }
   }
 
-  // Convert customer movements to plan array
-  for (const movement of Object.values(customerMovements)) {
-    plan.toMoveCustomers.push(movement);
+  // Determine if full customer move or individual channel moves
+  for (const [custId, movement] of Object.entries(customerMovements)) {
+    if (movement.channels_moving.length === movement.all_channels_count) {
+      // ALL channels moving - move the customer
+      plan.toMoveCustomers.push(movement);
+    } else {
+      // PARTIAL move - move individual channels
+      for (const channelId of movement.channels_moving) {
+        plan.toMove.push({
+          channel_id: channelId,
+          channel_name: channelInfo[channelId].name,
+          from_collection: movement.from_collection_name,
+          to_collection: movement.to_collection_name,
+          to_collection_id: movement.to_collection_id
+        });
+      }
+    }
   }
 
   // Channels to remove: in actual but not in desired
@@ -970,7 +825,17 @@ function formatPlanMessage(plan) {
     for (const item of plan.toMoveCustomers) {
       lines.push(`   ~ Customer: ${item.customer_name}`);
       lines.push(`     ${item.from_collection_name} → ${item.to_collection_name}`);
-      lines.push(`     Channels moving: ${item.channel_ids.length} channel(s)`);
+      lines.push(`     Channels moving: ${item.all_channels_count} channel(s)`);
+    }
+    lines.push("");
+  }
+
+  // Individual channels to move (partial customer movements)
+  if (plan.toMove.length > 0) {
+    lines.push(`🔄 Channels to MOVE: ${plan.toMove.length}`);
+    for (const item of plan.toMove) {
+      lines.push(`   ~ ${item.channel_name} (${item.channel_id})`);
+      lines.push(`     ${item.from_collection} → ${item.to_collection}`);
     }
     lines.push("");
   }
@@ -992,12 +857,13 @@ function formatPlanMessage(plan) {
   }
 
   // Summary
-  if (plan.toAdd.length === 0 && plan.toMoveCustomers.length === 0 && plan.toRemove.length === 0) {
+  if (plan.toAdd.length === 0 && plan.toMoveCustomers.length === 0 && plan.toMove.length === 0 && plan.toRemove.length === 0) {
     lines.push("✅ No changes needed - sheet is already in sync!");
   } else {
     lines.push("SUMMARY:");
     lines.push(`  Add: ${plan.toAdd.length} channel(s)`);
-    lines.push(`  Move: ${plan.toMoveCustomers.length} customer(s)`);
+    lines.push(`  Move Customers: ${plan.toMoveCustomers.length} customer(s)`);
+    lines.push(`  Move Channels: ${plan.toMove.length} channel(s)`);
     lines.push(`  Remove: ${plan.toRemove.length} channel(s) ${!CONFIG.INCLUDE_DELETES ? '(skipped)' : ''}`);
   }
 
@@ -1017,12 +883,15 @@ function executePlan(plan, skipDeletes, collectionOwners) {
     addFailed: 0,
     moveCustomerSuccess: 0,
     moveCustomerFailed: 0,
+    moveSuccess: 0,
+    moveFailed: 0,
     removeSuccess: 0,
     removeFailed: 0,
     removeSkipped: 0,
     // Email tracking
     addedChannels: [],
     movedCustomers: [],
+    movedChannels: [],
     removedChannels: [],
     failures: []
   };
@@ -1050,8 +919,6 @@ function executePlan(plan, skipDeletes, collectionOwners) {
     if (CONFIG.SET_OWNER) {
       channelObj.owner = collectionOwners[item.collection_id] || '';
     }
-    // Note: Customer association should be handled when adding channels
-    // For now, we don't create empty customer - channels should be added with proper customer
     addsByCollection[item.collection_id].push(channelObj);
   }
 
@@ -1106,7 +973,7 @@ function executePlan(plan, skipDeletes, collectionOwners) {
       if (result.success) {
         results.moveCustomerSuccess++;
         Logger.log(`✅ Moved customer ${item.customer_name} (ID: ${item.customer_id}) from ${item.from_collection_name} to ${item.to_collection_name}`);
-        Logger.log(`   ${item.channel_ids.length} channel(s) moved with this customer`);
+        Logger.log(`   ${item.all_channels_count} channel(s) moved with this customer`);
 
         // Track for email
         results.movedCustomers.push({
@@ -1114,7 +981,7 @@ function executePlan(plan, skipDeletes, collectionOwners) {
           name: item.customer_name,
           from_collection: item.from_collection_name,
           to_collection: item.to_collection_name,
-          channel_count: item.channel_ids.length
+          channel_count: item.all_channels_count
         });
       } else {
         results.moveCustomerFailed++;
@@ -1129,6 +996,37 @@ function executePlan(plan, skipDeletes, collectionOwners) {
 
       // Track failure for email
       results.failures.push(`Move customer error: ${item.customer_id} - ${item.customer_name}. ${error.toString()}`);
+    }
+  }
+
+  // Execute individual channel moves (for partial customer movements)
+  for (const item of plan.toMove) {
+    try {
+      const result = moveChannel(item.channel_id, item.to_collection_id);
+      if (result.success) {
+        results.moveSuccess++;
+        Logger.log(`✅ Moved channel ${item.channel_name} (${item.channel_id}) to ${item.to_collection}`);
+
+        // Track for email
+        results.movedChannels.push({
+          id: item.channel_id,
+          name: item.channel_name,
+          from_collection: item.from_collection,
+          to_collection: item.to_collection
+        });
+      } else {
+        results.moveFailed++;
+        Logger.log(`❌ Failed to move channel ${item.channel_name} (${item.channel_id}): ${result.error}`);
+
+        // Track failure for email
+        results.failures.push(`Move channel failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
+      }
+    } catch (error) {
+      results.moveFailed++;
+      Logger.log(`❌ Error moving channel ${item.channel_name} (${item.channel_id}): ${error.toString()}`);
+
+      // Track failure for email
+      results.failures.push(`Move channel error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
     }
   }
 
@@ -1193,10 +1091,17 @@ function formatResultMessage(results) {
   }
 
   if (results.moveCustomerSuccess > 0) {
-    lines.push(`✅ Moved: ${results.moveCustomerSuccess} customer(s)`);
+    lines.push(`✅ Moved Customers: ${results.moveCustomerSuccess} customer(s)`);
   }
   if (results.moveCustomerFailed > 0) {
-    lines.push(`❌ Move failed: ${results.moveCustomerFailed} customer(s)`);
+    lines.push(`❌ Move Customer failed: ${results.moveCustomerFailed} customer(s)`);
+  }
+
+  if (results.moveSuccess > 0) {
+    lines.push(`✅ Moved Channels: ${results.moveSuccess} channel(s)`);
+  }
+  if (results.moveFailed > 0) {
+    lines.push(`❌ Move Channel failed: ${results.moveFailed} channel(s)`);
   }
 
   if (results.removeSkipped > 0) {
@@ -1211,8 +1116,8 @@ function formatResultMessage(results) {
 
   lines.push("");
 
-  const totalActions = results.addSuccess + results.moveCustomerSuccess + results.removeSuccess;
-  const totalFailed = results.addFailed + results.moveCustomerFailed + results.removeFailed;
+  const totalActions = results.addSuccess + results.moveCustomerSuccess + results.moveSuccess + results.removeSuccess;
+  const totalFailed = results.addFailed + results.moveCustomerFailed + results.moveFailed + results.removeFailed;
 
   if (totalFailed === 0 && totalActions > 0) {
     lines.push("✅ All actions completed successfully!");
