@@ -588,6 +588,18 @@ function generateActionPlan(sheetData, collections, customers) {
   const actualChannelToCustomer = {}; // channel_id -> {customer_id, customer_name, collection_id, collection_name}
   const customerIdToCustomer = {}; // customer_id -> {id, name, collection_id, version, channel_ids}
   const channelIdToName = {}; // channel_id -> channel_name from API
+  const channelIdToStatus = {}; // channel_id -> status from collections API
+
+  // First, build a map of channel statuses from collections
+  // This is needed to filter out inactive channels
+  for (const col of collections) {
+    for (const ch of (col.channels || [])) {
+      channelIdToStatus[ch.id] = ch.status || 'unknown';
+      if (ch.name) {
+        channelIdToName[ch.id] = ch.name;
+      }
+    }
+  }
 
   // Map collections
   for (const col of collections) {
@@ -595,9 +607,11 @@ function generateActionPlan(sheetData, collections, customers) {
     collectionNameToId[normalizedName] = col.id;
     collectionOwners[col.id] = null;
 
-    // Track most common owner for this collection
+    // Track most common owner for this collection (only from active channels)
     const ownerCounts = {};
     for (const ch of (col.channels || [])) {
+      // Skip inactive channels when determining owners
+      if (ch.status === 'inactive') continue;
       if (ch.owner) {
         ownerCounts[ch.owner] = (ownerCounts[ch.owner] || 0) + 1;
       }
@@ -614,7 +628,7 @@ function generateActionPlan(sheetData, collections, customers) {
     }
   }
 
-  // Map customers and their channels
+  // Map customers and their channels (only active channels)
   for (const cust of customers) {
     customerIdToCustomer[cust.id] = {
       id: cust.id,
@@ -624,18 +638,12 @@ function generateActionPlan(sheetData, collections, customers) {
       channel_ids: cust.channel_ids || []
     };
 
-    // Map each channel to its customer
+    // Map each channel to its customer, but SKIP inactive channels
     for (const channelId of (cust.channel_ids || [])) {
-      // Find channel name from collections
-      let channelName = channelId;
-      for (const col of collections) {
-        for (const ch of (col.channels || [])) {
-          if (ch.id === channelId && ch.name) {
-            channelName = ch.name;
-            channelIdToName[channelId] = ch.name;
-            break;
-          }
-        }
+      // Skip inactive channels - they should not be part of the active state
+      if (channelIdToStatus[channelId] === 'inactive') {
+        Logger.log(`Skipping inactive channel ${channelId} (${channelIdToName[channelId] || channelId}) for customer ${cust.name}`);
+        continue;
       }
 
       actualChannelToCustomer[channelId] = {
@@ -647,10 +655,10 @@ function generateActionPlan(sheetData, collections, customers) {
     }
   }
 
-  // Build desired state from sheet
-  const desiredChannelToCollectionCustomer = {}; // channel_id -> {collection_id, customer_name, _normalized_customer}
+  // Build desired state from sheet and match to existing customers
+  const desiredChannelToCollectionCustomer = {}; // channel_id -> {collection_id, customer_name, _normalized_customer, customer_id}
   const collectionsNotFound = new Set();
-  const channelInfo = {}; // channel_id -> {name, collection_name, customer_name}
+  const channelInfo = {}; // channel_id -> {name, collection_name, customer_name, customer_id}
 
   for (const mapping of sheetData) {
     const normalizedCol = mapping._normalized_collection;
@@ -661,10 +669,21 @@ function generateActionPlan(sheetData, collections, customers) {
     }
 
     const collectionId = collectionNameToId[normalizedCol];
+
+    // Find the customer by name (case-insensitive match)
+    let matchedCustomerId = null;
+    for (const [custId, cust] of Object.entries(customerIdToCustomer)) {
+      if (normalizeCustomerName(cust.name) === mapping._normalized_customer) {
+        matchedCustomerId = cust.id;
+        break;
+      }
+    }
+
     desiredChannelToCollectionCustomer[mapping.channel_id] = {
       collection_id: collectionId,
       customer_name: mapping.customer_name,
-      _normalized_customer: mapping._normalized_customer
+      _normalized_customer: mapping._normalized_customer,
+      customer_id: matchedCustomerId
     };
 
     // Use fallback chain: sheet name → API name → channel ID
@@ -672,7 +691,8 @@ function generateActionPlan(sheetData, collections, customers) {
       name: mapping.channel_name || channelIdToName[mapping.channel_id] || mapping.channel_id,
       collection_name: mapping.collection_name,
       customer_name: mapping.customer_name,
-      collection_id: collectionId
+      collection_id: collectionId,
+      customer_id: matchedCustomerId
     };
   }
 
@@ -906,6 +926,7 @@ function executePlan(plan, skipDeletes, collectionOwners) {
   }
 
   // Group adds by collection for efficiency
+  // Note: For Customer-Centric Inbox, each channel needs customer information
   const addsByCollection = {};
   for (const item of plan.toAdd) {
     if (!addsByCollection[item.collection_id]) {
@@ -914,10 +935,28 @@ function executePlan(plan, skipDeletes, collectionOwners) {
     const channelObj = {
       id: item.channel_id
     };
+
     // Add owner if enabled
     if (CONFIG.SET_OWNER) {
       channelObj.owner = collectionOwners[item.collection_id] || '';
     }
+
+    // For Customer-Centric Inbox: link channel to customer
+    // If customer exists (customer_id is set), link to existing customer
+    // Otherwise, let ClearFeed auto-create based on domains or use CREATE_EMPTY_CUSTOMER config
+    if (item.customer_id) {
+      channelObj.customer = {
+        type: 'existing',
+        id: item.customer_id
+      };
+    } else if (CONFIG.CREATE_EMPTY_CUSTOMER) {
+      channelObj.customer = {
+        type: 'new'
+      };
+    }
+    // If neither customer_id nor CREATE_EMPTY_CUSTOMER, ClearFeed will
+    // auto-link based on channel user domains or create a new customer
+
     addsByCollection[item.collection_id].push(channelObj);
   }
 
