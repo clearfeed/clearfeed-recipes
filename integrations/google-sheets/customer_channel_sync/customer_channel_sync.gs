@@ -504,7 +504,7 @@ function moveChannel(channelId, collectionId) {
  * Fetches fresh customer data first to get current version
  * Returns {success: boolean, error: string}
  */
-function moveCustomer(customerId, collectionId, version) {
+function moveCustomer(customerId, collectionId) {
   // Fetch fresh customer data to get current version
   const freshCustomer = fetchCustomerById(customerId);
   if (!freshCustomer) {
@@ -629,6 +629,7 @@ function generateActionPlan(sheetData, collections, customers) {
   }
 
   // Map customers and their channels (only active channels)
+  const customerNameToId = {}; // _normalized_customer_name -> customer_id (for O(1) lookup)
   for (const cust of customers) {
     customerIdToCustomer[cust.id] = {
       id: cust.id,
@@ -637,6 +638,9 @@ function generateActionPlan(sheetData, collections, customers) {
       version: cust.version,
       channel_ids: cust.channel_ids || []
     };
+    // Build lookup map by normalized customer name
+    const normalizedName = normalizeCustomerName(cust.name);
+    customerNameToId[normalizedName] = cust.id;
 
     // Map each channel to its customer, but SKIP inactive channels
     for (const channelId of (cust.channel_ids || [])) {
@@ -670,14 +674,8 @@ function generateActionPlan(sheetData, collections, customers) {
 
     const collectionId = collectionNameToId[normalizedCol];
 
-    // Find the customer by name (case-insensitive match)
-    let matchedCustomerId = null;
-    for (const [custId, cust] of Object.entries(customerIdToCustomer)) {
-      if (normalizeCustomerName(cust.name) === mapping._normalized_customer) {
-        matchedCustomerId = cust.id;
-        break;
-      }
-    }
+    // Find the customer by name (case-insensitive match) - direct lookup
+    const matchedCustomerId = customerNameToId[mapping._normalized_customer] || null;
 
     desiredChannelToCollectionCustomer[mapping.channel_id] = {
       collection_id: collectionId,
@@ -728,15 +726,8 @@ function generateActionPlan(sheetData, collections, customers) {
       const desiredCollectionId = desiredInfo.collection_id;
       const actualCollectionId = actualInfo.collection_id;
 
-      // Find the customer for this channel (by matching customer name)
-      let targetCustomerId = null;
-      for (const [custId, cust] of Object.entries(customerIdToCustomer)) {
-        if (normalizeCustomerName(cust.name) === desiredInfo._normalized_customer &&
-            cust.channel_ids.includes(channelId)) {
-          targetCustomerId = custId;
-          break;
-        }
-      }
+      // Direct lookup by customer name - O(1) instead of O(N)
+      const targetCustomerId = customerNameToId[desiredInfo._normalized_customer];
 
       // If customer found and needs to move to different collection
       if (targetCustomerId && actualCollectionId !== desiredCollectionId) {
@@ -1007,7 +998,7 @@ function executePlan(plan, skipDeletes, collectionOwners) {
   // Execute customer moves (individual)
   for (const item of plan.toMoveCustomers) {
     try {
-      const result = moveCustomer(item.customer_id, item.to_collection_id, item.version);
+      const result = moveCustomer(item.customer_id, item.to_collection_id);
       if (result.success) {
         results.moveCustomerSuccess++;
         Logger.log(`✅ Moved customer ${item.customer_name} (ID: ${item.customer_id}) from ${item.from_collection_name} to ${item.to_collection_name}`);
