@@ -98,8 +98,8 @@ Use this model if your ClearFeed account organizes channels directly by **Collec
 
 ### Sheet Format
 
-| Collection | Channel Name | Channel ID |
-|------------|--------------|------------|
+| Collection | Channel Name (optional) | Channel ID |
+|------------|------------------------|------------|
 | Support | #support-tickets | C07AA9J9LJX |
 | Engineering | #eng-help | C06BB9H9HKW |
 

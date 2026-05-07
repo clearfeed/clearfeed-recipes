@@ -290,11 +290,9 @@ function populateCollectionChannels() {
       sheet.getRange(2, 1, lastRow - 1, 3).clearContent();
     }
 
-    // Set header if not present
-    if (lastRow < 1) {
-      sheet.getRange(1, 1, 1, 3).setValues([["Collection", "Channel Name", "Channel ID"]]);
-      sheet.getRange(1, 1, 1, 3).setFontWeight("bold");
-    }
+    // Always set headers to ensure correct format (3 columns for legacy model)
+    sheet.getRange(1, 1, 1, 3).setValues([["Collection", "Channel Name (optional)", "Channel ID"]]);
+    sheet.getRange(1, 1, 1, 3).setFontWeight("bold");
 
     // Write data to sheet
     if (sheetData.length > 0) {
@@ -425,11 +423,9 @@ function populateInitialMappings() {
       sheet.getRange(2, 1, lastRow - 1, 4).clearContent();
     }
 
-    // Set header if not present
-    if (lastRow < 1) {
-      sheet.getRange(1, 1, 1, 4).setValues([["Collection", "Customer", "Channel Name", "Channel ID"]]);
-      sheet.getRange(1, 1, 1, 4).setFontWeight("bold");
-    }
+    // Always set headers to ensure correct format (4 columns for customer-centric model)
+    sheet.getRange(1, 1, 1, 4).setValues([["Collection", "Customer", "Channel Name", "Channel ID"]]);
+    sheet.getRange(1, 1, 1, 4).setFontWeight("bold");
 
     // Write data to sheet
     if (sheetData.length > 0) {
