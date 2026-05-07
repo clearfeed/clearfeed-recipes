@@ -72,7 +72,7 @@ Use this model if your ClearFeed account organizes channels by **Customers**. Ea
 | Action | How |
 |--------|-----|
 | Move customer to different collection | Change the **Collection** column, then sync |
-| Stop monitoring a channel | Delete the row, then sync (with `INCLUDE_DELETES=true`) |
+| Delete a channel | Delete the row, then sync (with `INCLUDE_DELETES=true`) |
 
 ### Important Notes
 
@@ -115,7 +115,7 @@ Use this model if your ClearFeed account organizes channels directly by **Collec
 |--------|-----|
 | Add new channel | Add a row with Collection, Channel Name, and Channel ID, then sync |
 | Move channel to different collection | Change the **Collection** column, then sync |
-| Stop monitoring a channel | Delete the row, then sync (with `INCLUDE_DELETES=true`) |
+| Delete a channel | Delete the row, then sync (with `INCLUDE_DELETES=true`) |
 
 ### Menu Options
 
@@ -133,7 +133,7 @@ Use this model if your ClearFeed account organizes channels directly by **Collec
 |---------|-------------|---------|
 | `API_KEY` | Your ClearFeed API token (required) | *(empty)* |
 | `IS_ON_CUSTOMER_INBOX_MODEL` | Model selection: `true` = Customer-Centric, `false` = Legacy | `true` |
-| `INCLUDE_DELETES` | Allow channel deletion/unmonitoring | `false` |
+| `INCLUDE_DELETES` | Allow channel deletion | `false` |
 | `SHEET_NAME` | Sheet tab name | `"Channel Mappings"` |
 | `SPREADSHEET_ID` | Use a different spreadsheet (empty = current) | *(empty)* |
 
@@ -178,7 +178,7 @@ This script uses the [ClearFeed REST API](https://docs.clearfeed.ai/api).
 - `GET /collections?include=channels` - Fetch collections with channels
 - `GET /customers` - Fetch all customers (paginated)
 - `PATCH /customers/{id}` - Move customer to different collection
-- `DELETE /channels/{id}` - Unmonitor channel
+- `DELETE /channels/{id}` - Delete channel (marks inactive)
 
 ### Legacy Model Endpoints
 

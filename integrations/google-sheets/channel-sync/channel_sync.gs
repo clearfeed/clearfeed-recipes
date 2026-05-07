@@ -457,7 +457,7 @@ function populateInitialMappings() {
 /**
  * Sync customer-centric changes from sheet to ClearFeed
  * - MOVE: Moves entire customer to different collection
- * - DELETE: Unmonitors channel (marks inactive)
+ * - DELETE: Deletes channel (marks inactive)
  */
 function syncCustomerCentricChanges() {
   const runStartedAt = new Date();
@@ -639,15 +639,25 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
     if (!desiredCustomerIds.has(customer.id) && customer.channel_ids && customer.channel_ids.length > 0) {
       const channelId = customer.channel_ids[0];
       let channelName = channelId;
+      let isChannelActive = false;
 
-      // Find channel name
+      // Find channel name and check if active
       for (const col of collections) {
         for (const ch of (col.channels || [])) {
-          if (ch.id === channelId && ch.status !== 'inactive') {
-            channelName = ch.name || channelId;
+          if (ch.id === channelId) {
+            if (ch.status !== 'inactive') {
+              channelName = ch.name || channelId;
+              isChannelActive = true;
+            }
             break;
           }
         }
+      }
+
+      // Only add to delete list if channel is active
+      // Inactive channels or channels not found in collections are skipped
+      if (!isChannelActive) {
+        continue;
       }
 
       let collectionName = "Unknown";
@@ -703,15 +713,14 @@ function formatCustomerCentricPlanMessage(plan) {
   if (plan.toMove.length > 0) {
     lines.push(`🔄 Customers to MOVE: ${plan.toMove.length}`);
     for (const item of plan.toMove) {
-      lines.push(`   ~ ${item.customer_name} (${item.channel_name})`);
-      lines.push(`     ${item.from_collection} → ${item.to_collection}`);
+      lines.push(`   ~ ${item.customer_name} FROM ${item.from_collection} → ${item.to_collection}`);
     }
     lines.push("");
   }
 
   // Channels to delete
   if (plan.toDelete.length > 0) {
-    lines.push(`🗑️  Channels to UNMONITOR: ${plan.toDelete.length}`);
+    lines.push(`🗑️  Channels to DELETE: ${plan.toDelete.length}`);
     for (const item of plan.toDelete) {
       lines.push(`   - ${item.channel_name} (${item.channel_id}) from ${item.collection_name}`);
       lines.push(`     Customer: ${item.customer_name}`);
@@ -720,7 +729,7 @@ function formatCustomerCentricPlanMessage(plan) {
   }
 
   if (!CONFIG.INCLUDE_DELETES && plan.toDelete.length > 0) {
-    lines.push("⚠️  WARNING: Unmonitor operations are SKIPPED (CONFIG.INCLUDE_DELETES = false)");
+    lines.push("⚠️  WARNING: Delete operations are SKIPPED (CONFIG.INCLUDE_DELETES = false)");
     lines.push("");
   }
 
@@ -730,7 +739,7 @@ function formatCustomerCentricPlanMessage(plan) {
   } else {
     lines.push("SUMMARY:");
     lines.push(`  Move: ${plan.toMove.length}`);
-    lines.push(`  Unmonitor: ${plan.toDelete.length} ${!CONFIG.INCLUDE_DELETES ? '(skipped)' : ''}`);
+    lines.push(`  Delete: ${plan.toDelete.length} ${!CONFIG.INCLUDE_DELETES ? '(skipped)' : ''}`);
   }
 
   return lines.join("\n");
@@ -768,11 +777,11 @@ function executeCustomerCentricPlan(plan) {
     }
   }
 
-  // Execute deletes (unmonitor channels)
+  // Execute deletes (delete channels)
   for (const item of plan.toDelete) {
     if (!CONFIG.INCLUDE_DELETES) {
       results.deleteSkipped++;
-      Logger.log(`⏭️ Skipped unmonitor of channel ${item.channel_name} (${item.channel_id}) - deletes disabled`);
+      Logger.log(`⏭️ Skipped delete of channel ${item.channel_name} (${item.channel_id}) - deletes disabled`);
       continue;
     }
 
@@ -780,16 +789,16 @@ function executeCustomerCentricPlan(plan) {
       const result = deleteChannel(item.channel_id);
       if (result.success) {
         results.deleteSuccess++;
-        Logger.log(`✅ Unmonitored channel ${item.channel_name} (${item.channel_id})`);
+        Logger.log(`✅ Deleted channel ${item.channel_name} (${item.channel_id})`);
       } else {
         results.deleteFailed++;
-        Logger.log(`❌ Failed to unmonitor channel ${item.channel_name}: ${result.error}`);
-        results.failures.push(`Unmonitor failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
+        Logger.log(`❌ Failed to delete channel ${item.channel_name}: ${result.error}`);
+        results.failures.push(`Delete failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
       }
     } catch (error) {
       results.deleteFailed++;
-      Logger.log(`❌ Error unmonitoring channel ${item.channel_name}: ${error.toString()}`);
-      results.failures.push(`Unmonitor error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
+      Logger.log(`❌ Error deleting channel ${item.channel_name}: ${error.toString()}`);
+      results.failures.push(`Delete error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
     }
   }
 
@@ -814,13 +823,13 @@ function formatCustomerCentricResultMessage(results) {
   }
 
   if (results.deleteSkipped > 0) {
-    lines.push(`⏭️  Unmonitor skipped: ${results.deleteSkipped} channel(s) (deletes disabled)`);
+    lines.push(`⏭️  Delete skipped: ${results.deleteSkipped} channel(s) (deletes disabled)`);
   }
   if (results.deleteSuccess > 0) {
-    lines.push(`✅ Unmonitored: ${results.deleteSuccess} channel(s)`);
+    lines.push(`✅ Deleted: ${results.deleteSuccess} channel(s)`);
   }
   if (results.deleteFailed > 0) {
-    lines.push(`❌ Unmonitor failed: ${results.deleteFailed} channel(s)`);
+    lines.push(`❌ Delete failed: ${results.deleteFailed} channel(s)`);
   }
 
   lines.push("");
