@@ -287,17 +287,9 @@ Your sheet must have the following columns:
 
 ## Menu Options
 
-### ClearFeed Channel Sync Menu (Always Available)
+Only one menu appears at a time, based on your `IS_ON_CUSTOMER_INBOX_MODEL` configuration:
 
-| Option | Description |
-|--------|-------------|
-| 🔄 Sync Channels | Main sync function (routes to appropriate model) |
-| 🧪 Test Connection | Validates API token and shows account info |
-| 📋 View Logs | Instructions for viewing detailed logs |
-
-### 👤 Customer Inbox Sync Menu (Customer-Centric Model Only)
-
-This menu appears only when `IS_ON_CUSTOMER_INBOX_MODEL = true`.
+### Customers Sync Menu (Customer-Centric Model: `IS_ON_CUSTOMER_INBOX_MODEL = true`)
 
 | Option | Description |
 |--------|-------------|
@@ -305,7 +297,16 @@ This menu appears only when `IS_ON_CUSTOMER_INBOX_MODEL = true`.
 | 🔄 Sync Customer Changes | Syncs your sheet changes to ClearFeed |
 | ⏰ Setup Auto-Sync (1 hour) | Enables automatic sync every hour |
 | 🛑 Stop Auto-Sync | Disables automatic sync |
-| 🧪 Test Customer Connection | Validates API and shows customer statistics |
+| 🧪 Test Connection | Validates API and shows customer statistics |
+| 📋 View Logs | Instructions for viewing detailed logs |
+
+### ClearFeed Channel Sync Menu (Legacy Model: `IS_ON_CUSTOMER_INBOX_MODEL = false`)
+
+| Option | Description |
+|--------|-------------|
+| 🔄 Sync Channels | Reads the sheet, generates a plan, and syncs changes to ClearFeed |
+| 🧪 Test Connection | Validates your API token and shows collection count |
+| 📋 View Logs | Instructions for viewing detailed logs |
 
 ## Understanding the Sync Plan
 

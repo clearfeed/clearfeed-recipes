@@ -31,28 +31,33 @@ const EMAIL_CONFIG = {
 
 /**
  * Create custom menu in Google Sheet
+ * Shows different menu based on IS_ON_CUSTOMER_INBOX_MODEL flag
  */
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
-  const menu = ui.createMenu('ClearFeed Channel Sync')
-    .addItem('🔄 Sync Channels', 'syncChannels')
-    .addItem('🧪 Test Connection', 'testClearfeedConnection')
-    .addSeparator()
-    .addItem('📋 View Logs', 'showLogs');
 
-  menu.addToUi();
-
-  // Additional menu for Customer-Centric Inbox Model
   if (CONFIG.IS_ON_CUSTOMER_INBOX_MODEL) {
-    const customerMenu = ui.createMenu('👤 Customer Inbox Sync')
+    // Customer-Centric Inbox Model menu
+    const menu = ui.createMenu('Customers Sync')
       .addItem('📥 Populate Initial Mappings', 'populateInitialMappings')
       .addItem('🔄 Sync Customer Changes', 'syncCustomerCentricChanges')
+      .addSeparator()
       .addItem('⏰ Setup Auto-Sync (1 hour)', 'setupAutoSyncTrigger')
       .addItem('🛑 Stop Auto-Sync', 'deleteAutoSyncTrigger')
       .addSeparator()
-      .addItem('🧪 Test Customer Connection', 'testCustomerConnection');
+      .addItem('🧪 Test Connection', 'testCustomerConnection')
+      .addItem('📋 View Logs', 'showLogs');
 
-    customerMenu.addToUi();
+    menu.addToUi();
+  } else {
+    // Legacy Collection-Channel Model menu
+    const menu = ui.createMenu('ClearFeed Channel Sync')
+      .addItem('🔄 Sync Channels', 'syncChannels')
+      .addItem('🧪 Test Connection', 'testClearfeedConnection')
+      .addSeparator()
+      .addItem('📋 View Logs', 'showLogs');
+
+    menu.addToUi();
   }
 }
 
