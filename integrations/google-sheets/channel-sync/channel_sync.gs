@@ -567,6 +567,7 @@ function readCustomerCentricSheetData() {
 
 /**
  * Generate customer-centric action plan
+ * Only processes changes made in the sheet, not differences between sheet and API
  */
 function generateCustomerCentricPlan(sheetData, collections, customers) {
   // Build lookup structures
@@ -587,10 +588,9 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
     collectionsNotFound: []
   };
 
-  const actualCustomerIds = new Set(customers.map(c => c.id));
-  const desiredCustomerIds = new Set();
+  const customersInSheet = new Set();
 
-  // Analyze sheet data
+  // Analyze sheet data - only process what's explicitly in the sheet
   for (const mapping of sheetData) {
     const normalizedCol = mapping._normalized_collection;
     const normalizedCust = mapping._normalized_customer;
@@ -608,11 +608,11 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
       continue;
     }
 
-    desiredCustomerIds.add(customer.id);
+    customersInSheet.add(customer.id);
 
     const desiredCollectionId = collectionNameToId[normalizedCol];
 
-    // Check if customer needs to be moved
+    // Only add to move list if customer is NOT already in the desired collection
     if (customer.collection_id !== desiredCollectionId) {
       let fromCollectionName = "Unknown";
       for (const col of collections) {
@@ -634,9 +634,29 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
     }
   }
 
-  // Find customers to delete (in actual but not in desired)
+  // Only add to delete list for customers who are in the sheet's collections
+  // but not in the sheet itself (rows were deleted by user)
+  const collectionIdsInSheet = new Set();
+  for (const mapping of sheetData) {
+    const normalizedCol = mapping._normalized_collection;
+    if (collectionNameToId[normalizedCol]) {
+      collectionIdsInSheet.add(collectionNameToId[normalizedCol]);
+    }
+  }
+
   for (const customer of customers) {
-    if (!desiredCustomerIds.has(customer.id) && customer.channel_ids && customer.channel_ids.length > 0) {
+    // Skip if customer is in the sheet (user didn't delete the row)
+    if (customersInSheet.has(customer.id)) {
+      continue;
+    }
+
+    // Only consider for deletion if customer is in a collection that exists in the sheet
+    // This ensures we only delete channels from collections the user is managing
+    if (!collectionIdsInSheet.has(customer.collection_id)) {
+      continue;
+    }
+
+    if (customer.channel_ids && customer.channel_ids.length > 0) {
       const channelId = customer.channel_ids[0];
       let channelName = channelId;
       let isChannelActive = false;
@@ -655,7 +675,6 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
       }
 
       // Only add to delete list if channel is active
-      // Inactive channels or channels not found in collections are skipped
       if (!isChannelActive) {
         continue;
       }
