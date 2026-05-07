@@ -52,6 +52,7 @@ function onOpen() {
   } else {
     // Legacy Collection-Channel Model menu
     const menu = ui.createMenu('ClearFeed Channel Sync')
+      .addItem('📥 Populate Initial Mappings', 'populateCollectionChannels')
       .addItem('🔄 Sync Channels', 'syncChannels')
       .addItem('🧪 Test Connection', 'testClearfeedConnection')
       .addSeparator()
@@ -229,6 +230,93 @@ function showLogs() {
     'To view detailed logs:\n\n1. Open the Apps Script editor\n2. Click "View" > "Logs"\n\nOr run the function from the editor to see logs in real-time.',
     ui.ButtonSet.OK
   );
+}
+
+// =============================================================================
+// Legacy Model Functions
+// =============================================================================
+
+/**
+ * Populate the sheet with initial Collection -> Channel mappings (Legacy Model)
+ * Fetches all collections and their channels from ClearFeed
+ */
+function populateCollectionChannels() {
+  try {
+    Logger.log("Starting collection-channel population...");
+
+    // Validate configuration
+    if (!CONFIG.API_KEY || CONFIG.API_KEY === "") {
+      safeAlert("Configuration Error", "Please update CONFIG.API_KEY with your ClearFeed API key.");
+      return;
+    }
+
+    // Check if legacy model is enabled
+    if (CONFIG.IS_ON_CUSTOMER_INBOX_MODEL) {
+      safeAlert("Model Error", "Legacy Collection-Channel Model is not enabled. Please set CONFIG.IS_ON_CUSTOMER_INBOX_MODEL to false.");
+      return;
+    }
+
+    // Fetch collections with channels
+    const collections = fetchCollections();
+    Logger.log(`Fetched ${collections.length} collections from ClearFeed`);
+
+    // Build sheet data
+    const sheetData = [];
+    let totalChannels = 0;
+
+    for (const collection of collections) {
+      const channels = collection.channels || [];
+
+      for (const channel of channels) {
+        // Skip inactive channels
+        if (channel.status === 'inactive') {
+          continue;
+        }
+
+        sheetData.push({
+          collection: collection.name,
+          channel_name: channel.name || channel.id,
+          channel_id: channel.id
+        });
+        totalChannels++;
+      }
+    }
+
+    // Clear existing data in sheet (except header)
+    const sheet = getSheet();
+    const lastRow = sheet.getLastRow();
+
+    if (lastRow > 1) {
+      sheet.getRange(2, 1, lastRow - 1, 3).clearContent();
+    }
+
+    // Set header if not present
+    if (lastRow < 1) {
+      sheet.getRange(1, 1, 1, 3).setValues([["Collection", "Channel Name", "Channel ID"]]);
+      sheet.getRange(1, 1, 1, 3).setFontWeight("bold");
+    }
+
+    // Write data to sheet
+    if (sheetData.length > 0) {
+      const values = sheetData.map(row => [row.collection, row.channel_name, row.channel_id]);
+      sheet.getRange(2, 1, sheetData.length, 3).setValues(values);
+
+      const successMsg = `✅ Successfully populated sheet with ${totalChannels} active channels across ${collections.length} collections.\n\n` +
+        `The sheet has been populated with the following format:\n` +
+        `Collection | Channel Name | Channel ID`;
+
+      safeAlert("Population Complete", successMsg);
+      Logger.log(`Successfully populated sheet with ${sheetData.length} channel mappings`);
+
+    } else {
+      safeAlert("No Data Found", "No active channels found in your ClearFeed account.");
+      Logger.log("No active channels found");
+    }
+
+  } catch (error) {
+    Logger.log(`Error during population: ${error.toString()}`);
+    safeAlert("Population Error", `An error occurred: ${error.toString()}`);
+  }
 }
 
 // =============================================================================

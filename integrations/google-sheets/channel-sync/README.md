@@ -44,6 +44,7 @@ Use this if your ClearFeed account uses the new Customer-Centric Inbox model whe
 Use this if your ClearFeed account uses the traditional Collection → Channel model.
 
 **Features:**
+- Populate sheet with existing collection-channel mappings
 - Add channels to collections
 - Move channels between collections
 - Remove channels from collections
@@ -121,7 +122,7 @@ const CONFIG = {
 1. Go back to your Google Sheet
 2. Refresh the page (a new menu should appear)
 3. Click **Test Connection** from the appropriate menu:
-   - For Customer-Centric Model: **👤 Customer Inbox Sync** > **🧪 Test Customer Connection**
+   - For Customer-Centric Model: **Customers Sync** > **🧪 Test Connection**
    - For Legacy Model: **ClearFeed Channel Sync** > **🧪 Test Connection**
 4. You should see a success message with your account details
 
@@ -129,20 +130,25 @@ const CONFIG = {
 
 **For Customer-Centric Model:**
 
-1. First-time setup: Click **👤 Customer Inbox Sync** > **📥 Populate Initial Mappings**
+1. First-time setup: Click **Customers Sync** > **📥 Populate Initial Mappings**
    - This validates that each customer has exactly 1 channel
    - Populates the sheet with current Customer → Channel mappings
    - Auto-sync trigger is enabled (runs every 1 hour)
 
-2. To sync changes: Click **👤 Customer Inbox Sync** > **🔄 Sync Customer Changes**
+2. To sync changes: Click **Customers Sync** > **🔄 Sync Customer Changes**
    - Move customers to different collections
    - Unmonitor channels (if INCLUDE_DELETES=true)
 
 **For Legacy Model:**
 
-1. Click **ClearFeed Channel Sync** > **🔄 Sync Channels**
-2. Review the sync plan that shows what will be added, moved, or removed
-3. Click **Yes** to confirm and execute the plan
+1. (Optional) First-time setup: Click **ClearFeed Channel Sync** > **📥 Populate Initial Mappings**
+   - Fetches all collections and their channels from ClearFeed
+   - Populates the sheet with current Collection → Channel mappings
+   - Skips inactive channels
+
+2. To sync changes: Click **ClearFeed Channel Sync** > **🔄 Sync Channels**
+3. Review the sync plan that shows what will be added, moved, or removed
+4. Click **Yes** to confirm and execute the plan
 
 ## Customer-Centric Inbox Model
 
@@ -199,6 +205,44 @@ After initial population, auto-sync runs every 1 hour to:
 - Show channels unmonitored via webapp
 
 Changes made in the sheet are synced to ClearFeed when you run **🔄 Sync Customer Changes**.
+
+## Legacy Collection-Channel Model
+
+### Sheet Format
+
+| Collection | Channel Name | Channel ID |
+|------------|--------------|------------|
+| Support | #support-tickets | C07AA9J9LJX |
+| Engineering | #eng-help | C06BB9H9HKW |
+
+### Initial Population
+
+When you run **📥 Populate Initial Mappings**, the script:
+1. Fetches all collections with their channels from ClearFeed
+2. Skips inactive channels (status: inactive)
+3. Populates the sheet with current Collection → Channel mappings
+
+This is useful for:
+- Initial setup with existing channels
+- Refreshing the sheet with current ClearFeed state
+- Seeing all channels across all collections
+
+### Sync Operations
+
+**Add Channel:** Add new channels to collections
+- Add a new row with Collection, Channel Name, and Channel ID
+- Run **🔄 Sync Channels**
+- The channel is added to ClearFeed
+
+**Move Channel:** Change channel's collection
+- Update the **Collection** column in the sheet
+- Run **🔄 Sync Channels**
+- The channel moves to the new collection
+
+**Remove Channel:** Unmonitor a channel
+- Delete the row from the sheet
+- Run **🔄 Sync Channels** (with INCLUDE_DELETES=true)
+- The channel is removed from ClearFeed
 
 ## Configuration Options
 
@@ -304,6 +348,7 @@ Only one menu appears at a time, based on your `IS_ON_CUSTOMER_INBOX_MODEL` conf
 
 | Option | Description |
 |--------|-------------|
+| 📥 Populate Initial Mappings | Fetches all collections and channels from ClearFeed and populates the sheet |
 | 🔄 Sync Channels | Reads the sheet, generates a plan, and syncs changes to ClearFeed |
 | 🧪 Test Connection | Validates your API token and shows collection count |
 | 📋 View Logs | Instructions for viewing detailed logs |
