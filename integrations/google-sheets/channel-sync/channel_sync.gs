@@ -1223,8 +1223,7 @@ function deleteChannel(channelId) {
   const response = UrlFetchApp.fetch(url, {
     method: 'DELETE',
     headers: {
-      'Authorization': `Bearer ${CONFIG.API_KEY}`,
-      'Content-Type': 'application/json'
+      'Authorization': `Bearer ${CONFIG.API_KEY}`
     },
     muteHttpExceptions: true
   });
