@@ -589,6 +589,7 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
   };
 
   const customersInSheet = new Set();
+  const customersInSheetByName = new Set(); // Track by normalized name for debugging
 
   // Analyze sheet data - only process what's explicitly in the sheet
   for (const mapping of sheetData) {
@@ -605,10 +606,12 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
     const customer = customerNameToCustomer[normalizedCust];
     if (!customer) {
       plan.customersNotFound.push(mapping.customer_name);
+      Logger.log(`Customer not found: "${mapping.customer_name}" (normalized: "${normalizedCust}")`);
       continue;
     }
 
     customersInSheet.add(customer.id);
+    customersInSheetByName.add(normalizedCust);
 
     const desiredCollectionId = collectionNameToId[normalizedCol];
 
@@ -634,25 +637,86 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
     }
   }
 
-  // Only add to delete list for customers who are in the sheet's collections
-  // but not in the sheet itself (rows were deleted by user)
-  const collectionIdsInSheet = new Set();
-  for (const mapping of sheetData) {
-    const normalizedCol = mapping._normalized_collection;
-    if (collectionNameToId[normalizedCol]) {
-      collectionIdsInSheet.add(collectionNameToId[normalizedCol]);
-    }
-  }
+  Logger.log(`Customers in sheet: ${customersInSheet.size} by ID, ${customersInSheetByName.size} by name`);
 
+  // Find customers to delete (rows deleted by user from sheet)
+  // Only include customers who are NOT in the sheet (by ID match)
   for (const customer of customers) {
-    // Skip if customer is in the sheet (user didn't delete the row)
+    // Skip if customer is currently in the sheet (row not deleted)
     if (customersInSheet.has(customer.id)) {
       continue;
     }
 
-    // Only consider for deletion if customer is in a collection that exists in the sheet
-    // This ensures we only delete channels from collections the user is managing
-    if (!collectionIdsInSheet.has(customer.collection_id)) {
+    // Double-check by name in case there's an ID mismatch issue
+    const normalizedName = normalizeCollectionName(customer.name);
+    if (customersInSheetByName.has(normalizedName)) {
+      Logger.log(`Skipping deletion for ${customer.name} - found by name in sheet despite ID mismatch`);
+      continue;
+    }
+
+    // Customer not in sheet by ID or name - only process if deletes enabled
+    if (!CONFIG.INCLUDE_DELETES) {
+      // Skip deletes entirely if not enabled
+      continue;
+    }
+
+    if (customer.channel_ids && customer.channel_ids.length > 0) {
+      const channelId = customer.channel_ids[0];
+      let channelName = channelId;
+      let isChannelActive = false;
+
+      // Find channel name and check if active
+      for (const col of collections) {
+        for (const ch of (col.channels || [])) {
+          if (ch.id === channelId) {
+            if (ch.status !== 'inactive') {
+              channelName = ch.name || channelId;
+              isChannelActive = true;
+            }
+            break;
+          }
+        }
+      }
+
+      // Only add to delete list if channel is active
+      if (!isChannelActive) {
+        continue;
+      }
+
+      let collectionName = "Unknown";
+      for (const col of collections) {
+        if (col.id === customer.collection_id) {
+          collectionName = col.name;
+          break;
+        }
+      }
+
+      plan.toDelete.push({
+        customer_id: customer.id,
+        customer_name: customer.name,
+        channel_id: channelId,
+        channel_name: channelName,
+        collection_name: collectionName
+      });
+    }
+  }
+
+  // Find customers to delete (rows deleted by user from sheet)
+  // Only include customers who we KNOW were in the sheet before
+  // by checking if their customer name appears in our sheet data lookup
+  for (const customer of customers) {
+    // Skip if customer is currently in the sheet (row not deleted)
+    if (customersInSheet.has(customer.id)) {
+      continue;
+    }
+
+    // Customer not in sheet - but we should only delete if we can verify
+    // this customer was SUPPOSED to be managed via the sheet
+    // Since we don't track state between runs, the safest approach is:
+    // Only delete if INCLUDE_DELETES is explicitly enabled AND customer has active channel
+
+    if (!CONFIG.INCLUDE_DELETES) {
+      // Skip deletes entirely if not enabled - prevents accidental deletions
       continue;
     }
 
