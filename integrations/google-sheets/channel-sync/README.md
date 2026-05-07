@@ -1,14 +1,20 @@
 # ClearFeed Channel Sync for Google Sheets
 
-A Google Apps Script that syncs collection-to-channel mappings from a Google Sheet to ClearFeed. This allows you to bulk manage which Slack channels belong to which ClearFeed collections.
+A Google Apps Script that syncs channel mappings from a Google Sheet to ClearFeed. This allows you to bulk manage channels in your ClearFeed account.
+
+**Supports Two Models:**
+1. **Customer-Centric Inbox Model** (New, default) - Syncs Customer → Channel mappings with auto-sync capabilities
+2. **Legacy Model** - Syncs Collection → Channel mappings
 
 ## Features
 
+- **Dual model support** - Works with both new Customer-Centric and legacy Collection-based models
 - **Bulk channel management** - Add, move, or remove multiple channels at once
 - **Plan preview** - See exactly what changes will be made before executing
 - **Safe by default** - Channel deletion is disabled by default (must be explicitly enabled)
+- **Auto-sync** - Automatic sync every 1 hour for Customer-Centric model
 - **Non-interactive mode support** - Works with Google Sheets triggers for automation
-- **Flexible configuration** - All settings managed in the sheet itself
+- **Flexible configuration** - All settings managed in the script itself
 
 ## Prerequisites
 
@@ -16,6 +22,31 @@ Before you begin, make sure you have:
 
 1. **A Google Account** with access to Google Sheets and Google Apps Script
 2. **A ClearFeed API Token** (see [Personal Access Token](https://docs.clearfeed.ai/clearfeed-help-center/account-setup/developer-settings#personal-access-token))
+
+## Choosing Your Model
+
+### Customer-Centric Inbox Model (IS_ON_CUSTOMER_INBOX_MODEL = true)
+
+Use this if your ClearFeed account uses the new Customer-Centric Inbox model where:
+- Each customer object has exactly one Slack channel
+- Customers can be moved between collections
+
+**Features:**
+- Initial sheet population from ClearFeed
+- Auto-sync every 1 hour to reflect webapp changes
+- Move entire customers to different collections
+- Unmonitor channels (delete operation)
+
+**Limitation:** Only supports customers with exactly 1 channel per customer.
+
+### Legacy Model (IS_ON_CUSTOMER_INBOX_MODEL = false)
+
+Use this if your ClearFeed account uses the traditional Collection → Channel model.
+
+**Features:**
+- Add channels to collections
+- Move channels between collections
+- Remove channels from collections
 
 ## Quick Start Guide
 
@@ -66,35 +97,123 @@ const CONFIG = {
   SHEET_NAME: "Channel Mappings", // Name of the sheet tab
   INCLUDE_DELETES: false, // Whether to actually delete channels (default: false)
   SPREADSHEET_ID: "", // Leave empty to use current spreadsheet
+  CREATE_EMPTY_CUSTOMER: false, // Legacy model only
+  SET_OWNER: false, // Legacy model only
+  IS_ON_CUSTOMER_INBOX_MODEL: true, // Set to true for Customer-Centric Model, false for Legacy
 };
 ```
 
 **Required:**
 - Set `API_KEY` to your ClearFeed API token
 
+**Model Selection:**
+- Set `IS_ON_CUSTOMER_INBOX_MODEL` to `true` for Customer-Centric Inbox Model (default)
+- Set `IS_ON_CUSTOMER_INBOX_MODEL` to `false` for Legacy Collection-Channel Model
+
 **Optional:**
-- Change `SHEET_NAME` if your spreadsheet has multiple sheets (if there's only one sheet, it's used automatically)
-- Set `INCLUDE_DELETES` to `true` to enable channel deletion (use with caution!)
+- Change `SHEET_NAME` if your spreadsheet has multiple sheets
+- Set `INCLUDE_DELETES` to `true` to enable channel deletion/unmonitoring (use with caution!)
 - Set `SPREADSHEET_ID` to use a different spreadsheet
+- `CREATE_EMPTY_CUSTOMER` and `SET_OWNER` are legacy model options only
 
 ### Step 5: Test Connection
 
 1. Go back to your Google Sheet
 2. Refresh the page (a new menu should appear)
-3. Click **ClearFeed Channel Sync** > **Test Connection**
-4. You should see a success message with the number of collections found
+3. Click **Test Connection** from the appropriate menu:
+   - For Customer-Centric Model: **👤 Customer Inbox Sync** > **🧪 Test Customer Connection**
+   - For Legacy Model: **ClearFeed Channel Sync** > **🧪 Test Connection**
+4. You should see a success message with your account details
 
 ### Step 6: Run the Sync
 
-1. Click **ClearFeed Channel Sync** > **Sync Channels**
+**For Customer-Centric Model:**
+
+1. First-time setup: Click **👤 Customer Inbox Sync** > **📥 Populate Initial Mappings**
+   - This validates that each customer has exactly 1 channel
+   - Populates the sheet with current Customer → Channel mappings
+   - Auto-sync trigger is enabled (runs every 1 hour)
+
+2. To sync changes: Click **👤 Customer Inbox Sync** > **🔄 Sync Customer Changes**
+   - Move customers to different collections
+   - Unmonitor channels (if INCLUDE_DELETES=true)
+
+**For Legacy Model:**
+
+1. Click **ClearFeed Channel Sync** > **🔄 Sync Channels**
 2. Review the sync plan that shows what will be added, moved, or removed
 3. Click **Yes** to confirm and execute the plan
+
+## Customer-Centric Inbox Model
+
+### Sheet Format
+
+| Collection | Customer | Channel Name | Channel ID |
+|------------|----------|--------------|------------|
+| Support | Acme Corp | #acme-support | C07AA9J9LJX |
+| Sales | Startup Inc | #startup-sales | C06BB9H9HKW |
+
+### Initial Population
+
+When you run **📥 Populate Initial Mappings**, the script:
+
+1. Fetches all customers from ClearFeed
+2. Validates each customer has exactly 1 channel
+3. Populates the sheet with current mappings
+4. Sets up auto-sync (runs every 1 hour)
+
+**Validation Rule:** If any customer has more than 1 channel, the script will error and terminate. Only customers with exactly 1 channel are supported.
+
+### Sync Operations
+
+**Move Customer:** Changes the collection for a customer (and its single channel)
+- Update the **Collection** column in the sheet
+- Run **🔄 Sync Customer Changes**
+- The entire customer object moves to the new collection
+
+**Unmonitor Channel:** Removes a channel from monitoring
+- Delete the row from the sheet
+- Run **🔄 Sync Customer Changes** (with INCLUDE_DELETES=true)
+- The channel is marked as inactive in ClearFeed
+
+**Auto-Sync:** Keeps the sheet updated with webapp changes
+- Runs automatically every 1 hour
+- Fetches latest customers and channels from ClearFeed
+- Updates the sheet with current state
+
+### Menu Options
+
+| Option | Description |
+|--------|-------------|
+| 📥 Populate Initial Mappings | First-time setup: fetches customers and populates sheet |
+| 🔄 Sync Customer Changes | Syncs your sheet changes to ClearFeed |
+| ⏰ Setup Auto-Sync (1 hour) | Enables automatic sync every hour |
+| 🛑 Stop Auto-Sync | Disables automatic sync |
+| 🧪 Test Customer Connection | Validates API and shows customer statistics |
+
+### Auto-Sync Behavior
+
+After initial population, auto-sync runs every 1 hour to:
+- Reflect new customers added via webapp
+- Update collection changes made via webapp
+- Show channels unmonitored via webapp
+
+Changes made in the sheet are synced to ClearFeed when you run **🔄 Sync Customer Changes**.
 
 ## Configuration Options
 
 ### API_KEY (Required)
 
 Your ClearFeed API token (see [Personal Access Token](https://docs.clearfeed.ai/clearfeed-help-center/account-setup/developer-settings#personal-access-token)).
+
+### IS_ON_CUSTOMER_INBOX_MODEL (Model Selection)
+
+Determines which sync model to use.
+
+- **Default**: `true` (Customer-Centric Inbox Model)
+- **Set to `false`**: Use Legacy Collection-Channel Model
+
+**Note:** This is the most important configuration option. Set it based on your ClearFeed account type.
 
 ### SHEET_NAME
 
@@ -103,14 +222,14 @@ The name of the sheet tab containing your channel mappings.
 - **Default**: `"Channel Mappings"`
 - **Example**: `"My Channels"`
 
-**Note:** If your spreadsheet has only one sheet, the script will automatically use it regardless of its name. This setting is only needed when your spreadsheet contains multiple sheets.
+**Note:** If your spreadsheet has only one sheet, the script will automatically use it regardless of its name.
 
 ### INCLUDE_DELETES
 
 Whether to actually remove channels that are not in your sheet.
 
 - **Default**: `false` (safe mode - channels are only added/moved, never removed)
-- **Set to `true`**: Channels not in the sheet will be removed from ClearFeed
+- **Set to `true`**: Channels not in the sheet will be removed/unmonitored in ClearFeed
 
 **Warning:** Enable this only if you want channels not in the sheet to be deleted from ClearFeed!
 
@@ -120,6 +239,20 @@ Use this to sync from a different spreadsheet than where the script is installed
 
 - **Default**: `""` (use the current spreadsheet)
 - **Example**: `"1BxiMvs0XRA5nFMdK..."` (found in the spreadsheet URL)
+
+### CREATE_EMPTY_CUSTOMER (Legacy Model Only)
+
+Whether to create empty customer objects when adding channels.
+
+- **Default**: `false`
+- **Legacy Model Only**: This option has no effect in Customer-Centric mode
+
+### SET_OWNER (Legacy Model Only)
+
+Whether to set the owner field when adding channels.
+
+- **Default**: `false`
+- **Legacy Model Only**: This option has no effect in Customer-Centric mode
 
 ## Sheet Format
 
@@ -154,13 +287,25 @@ Your sheet must have the following columns:
 
 ## Menu Options
 
-The **ClearFeed Channel Sync** menu provides the following options:
+### ClearFeed Channel Sync Menu (Always Available)
 
 | Option | Description |
 |--------|-------------|
-| 🔄 Sync Channels | Reads the sheet, generates a plan, and syncs changes to ClearFeed |
-| 🧪 Test Connection | Validates your API token and shows collection count |
+| 🔄 Sync Channels | Main sync function (routes to appropriate model) |
+| 🧪 Test Connection | Validates API token and shows account info |
 | 📋 View Logs | Instructions for viewing detailed logs |
+
+### 👤 Customer Inbox Sync Menu (Customer-Centric Model Only)
+
+This menu appears only when `IS_ON_CUSTOMER_INBOX_MODEL = true`.
+
+| Option | Description |
+|--------|-------------|
+| 📥 Populate Initial Mappings | First-time setup: fetches customers and populates sheet |
+| 🔄 Sync Customer Changes | Syncs your sheet changes to ClearFeed |
+| ⏰ Setup Auto-Sync (1 hour) | Enables automatic sync every hour |
+| 🛑 Stop Auto-Sync | Disables automatic sync |
+| 🧪 Test Customer Connection | Validates API and shows customer statistics |
 
 ## Understanding the Sync Plan
 
@@ -254,7 +399,7 @@ You can set up a time-based trigger to run the sync automatically:
 
 ### Q: What happens if I have the same channel in multiple rows?
 
-A: The last occurrence in the sheet will determine which collection the channel belongs to.
+A: **Customer-Centric Model:** This shouldn't happen as each customer has exactly 1 channel. **Legacy Model:** The last occurrence in the sheet will determine which collection the channel belongs to.
 
 ### Q: Can I sync to multiple ClearFeed accounts?
 
@@ -276,6 +421,22 @@ A: Invalid channel IDs are logged and skipped. Check the logs for details.
 
 A: This script is designed for Slack channel IDs. For Teams, you'd need to modify the channel ID format and API calls.
 
+### Q: What if my customer has more than 1 channel?
+
+A: **Customer-Centric Model:** The script will throw a validation error and terminate. Only customers with exactly 1 channel are supported. You'll need to resolve this in the ClearFeed webapp first.
+
+### Q: How do I switch between Customer-Centric and Legacy models?
+
+A: Update the `IS_ON_CUSTOMER_INBOX_MODEL` flag in the CONFIG object. Set to `true` for Customer-Centric, `false` for Legacy. Refresh your Google Sheet to see the appropriate menu options.
+
+### Q: What does auto-sync do?
+
+A: In Customer-Centric mode, auto-sync runs every 1 hour to update the sheet with changes made via the ClearFeed webapp (new customers, collection changes, etc.). It does NOT sync changes from your sheet to ClearFeed - use **🔄 Sync Customer Changes** for that.
+
+### Q: Can I add new customers via the sheet?
+
+A: **Customer-Centric Model:** No. The ADD operation is not supported. New customers must be created via the ClearFeed webapp. The sheet can only move existing customers and unmonitor channels. **Legacy Model:** Yes, you can add new channels.
+
 ## Troubleshooting
 
 ### "Sheet 'Channel Mappings' not found"
@@ -290,7 +451,13 @@ A: This script is designed for Slack channel IDs. For Teams, you'd need to modif
 
 ### "No channel mappings found in the sheet"
 
-**Solution:** Ensure your sheet has at least one data row below the header row, and all three columns are filled.
+**Solution:** Ensure your sheet has at least one data row below the header row, and all required columns are filled.
+
+### "Validation Error: customers with multiple channels found"
+
+**Solution (Customer-Centric Model):** Some customers in your account have more than 1 channel. This script only supports customers with exactly 1 channel. Resolve this in the ClearFeed webapp by:
+- Moving extra channels to different customers
+- Or using the Legacy model instead
 
 ### Sync doesn't execute when run from a trigger
 
@@ -300,14 +467,35 @@ A: This script is designed for Slack channel IDs. For Teams, you'd need to modif
 
 **Solution:** Verify the exact spelling of collection names in ClearFeed. The comparison is case-insensitive but must match otherwise.
 
+### "Customer-Centric Inbox Model is not enabled"
+
+**Solution:** You're trying to use Customer-Centric features but `IS_ON_CUSTOMER_INBOX_MODEL` is set to `false`. Update the CONFIG object and refresh the sheet.
+
+### Auto-sync not running
+
+**Solution:** Check that the trigger is properly set up:
+1. Open Apps Script editor
+2. Click the clock icon (Triggers)
+3. Verify `autoSyncCustomerMappings` trigger exists
+4. If not, run **⏰ Setup Auto-Sync (1 hour)** from the menu
+
 ## Data Structure
 
 The script uses the ClearFeed REST API:
+
+### Legacy Model Endpoints
 
 - **GET** `/collections?include=channels` - Fetch all collections with their channels
 - **POST** `/collections/{id}/channels` - Add channels to a collection
 - **PATCH** `/channels/{id}` - Move a channel to a different collection
 - **DELETE** `/channels/{id}` - Remove a channel
+
+### Customer-Centric Model Endpoints
+
+- **GET** `/collections?include=channels` - Fetch all collections with their channels
+- **GET** `/customers` - Fetch all customers (with pagination)
+- **PATCH** `/customers/{id}` - Move a customer to a different collection
+- **DELETE** `/channels/{id}` - Unmonitor a channel (marks inactive)
 
 For full API documentation, see [ClearFeed API Docs](https://docs.clearfeed.ai/api).
 

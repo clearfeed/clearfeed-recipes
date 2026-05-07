@@ -7,8 +7,9 @@ const CONFIG = {
   SHEET_NAME: "Channel Mappings", // Name of the sheet tab containing the mappings
   INCLUDE_DELETES: false, // Whether to actually delete channels (default: false for safety)
   SPREADSHEET_ID: "", // Leave empty to use current spreadsheet, or specify ID
-  CREATE_EMPTY_CUSTOMER: false, // Whether to create an empty customer object when adding channels
-  SET_OWNER: false, // Whether to set the owner field when adding channels
+  CREATE_EMPTY_CUSTOMER: false, // Whether to create an empty customer object when adding channels (OLD MODEL ONLY)
+  SET_OWNER: false, // Whether to set the owner field when adding channels (OLD MODEL ONLY)
+  IS_ON_CUSTOMER_INBOX_MODEL: true, // Set to true for Customer-Centric Inbox Model (NEW), false for old model
 };
 
 const BASE_URL = "https://api.clearfeed.app/v1/rest";
@@ -40,6 +41,19 @@ function onOpen() {
     .addItem('📋 View Logs', 'showLogs');
 
   menu.addToUi();
+
+  // Additional menu for Customer-Centric Inbox Model
+  if (CONFIG.IS_ON_CUSTOMER_INBOX_MODEL) {
+    const customerMenu = ui.createMenu('👤 Customer Inbox Sync')
+      .addItem('📥 Populate Initial Mappings', 'populateInitialMappings')
+      .addItem('🔄 Sync Customer Changes', 'syncCustomerCentricChanges')
+      .addItem('⏰ Setup Auto-Sync (1 hour)', 'setupAutoSyncTrigger')
+      .addItem('🛑 Stop Auto-Sync', 'deleteAutoSyncTrigger')
+      .addSeparator()
+      .addItem('🧪 Test Customer Connection', 'testCustomerConnection');
+
+    customerMenu.addToUi();
+  }
 }
 
 // =============================================================================
@@ -48,12 +62,22 @@ function onOpen() {
 
 /**
  * Main function to sync channels from the sheet to ClearFeed
+ * Routes to old or new logic based on IS_ON_CUSTOMER_INBOX_MODEL flag
  */
 function syncChannels() {
   const runStartedAt = new Date();
 
   try {
     Logger.log("Starting channel sync...");
+
+    // Check which model to use
+    if (CONFIG.IS_ON_CUSTOMER_INBOX_MODEL) {
+      Logger.log("Using Customer-Centric Inbox Model");
+      syncCustomerCentricChanges();
+      return;
+    }
+
+    Logger.log("Using Old Model (Collection-Channel)");
 
     // Validate configuration
     if (!CONFIG.API_KEY || CONFIG.API_KEY === "") {
@@ -157,6 +181,7 @@ function syncChannels() {
 
 /**
  * Test the ClearFeed API connection
+ * Routes to appropriate test based on model
  */
 function testClearfeedConnection() {
   try {
@@ -164,6 +189,12 @@ function testClearfeedConnection() {
 
     if (!CONFIG.API_KEY || CONFIG.API_KEY === "") {
       safeAlert("Configuration Error", "Please update CONFIG.API_KEY with your ClearFeed API key.");
+      return;
+    }
+
+    // Route based on model
+    if (CONFIG.IS_ON_CUSTOMER_INBOX_MODEL) {
+      testCustomerConnection();
       return;
     }
 
@@ -193,6 +224,698 @@ function showLogs() {
     'To view detailed logs:\n\n1. Open the Apps Script editor\n2. Click "View" > "Logs"\n\nOr run the function from the editor to see logs in real-time.',
     ui.ButtonSet.OK
   );
+}
+
+// =============================================================================
+// Customer-Centric Inbox Model Functions
+// =============================================================================
+
+/**
+ * Populate the sheet with initial Customer -> Channel mappings
+ * Validates that each customer has only 1 channel
+ */
+function populateInitialMappings() {
+  const runStartedAt = new Date();
+
+  try {
+    Logger.log("Starting initial mapping population...");
+
+    // Validate configuration
+    if (!CONFIG.API_KEY || CONFIG.API_KEY === "") {
+      safeAlert("Configuration Error", "Please update CONFIG.API_KEY with your ClearFeed API key.");
+      return;
+    }
+
+    // Check if customer-centric model is enabled
+    if (!CONFIG.IS_ON_CUSTOMER_INBOX_MODEL) {
+      safeAlert("Model Error", "Customer-Centric Inbox Model is not enabled. Please set CONFIG.IS_ON_CUSTOMER_INBOX_MODEL to true.");
+      return;
+    }
+
+    // Fetch collections for lookup
+    const collections = fetchCollections();
+    Logger.log(`Fetched ${collections.length} collections from ClearFeed`);
+
+    // Build collection ID to name mapping
+    const collectionIdToName = {};
+    for (const col of collections) {
+      collectionIdToName[col.id] = col.name;
+    }
+
+    // Fetch all customers
+    const customers = fetchAllCustomers();
+    Logger.log(`Fetched ${customers.length} customers`);
+
+    // Build customer data with validation
+    const sheetData = [];
+    const multiChannelCustomers = [];
+
+    for (const customer of customers) {
+      const channelIds = customer.channel_ids || [];
+
+      // Validation: Check if customer has exactly 1 channel
+      if (channelIds.length === 0) {
+        Logger.log(`Warning: Customer "${customer.name}" has no channels, skipping`);
+        continue;
+      } else if (channelIds.length > 1) {
+        multiChannelCustomers.push({
+          name: customer.name,
+          channelCount: channelIds.length,
+          channels: channelIds.join(', ')
+        });
+        continue;
+      }
+
+      // Get the single channel ID
+      const channelId = channelIds[0];
+
+      // Fetch channel details to get channel name
+      let channelName = channelId;
+      for (const col of collections) {
+        for (const ch of (col.channels || [])) {
+          if (ch.id === channelId) {
+            channelName = ch.name || channelId;
+            break;
+          }
+        }
+      }
+
+      // Get collection name
+      const collectionName = collectionIdToName[customer.collection_id] || "Unknown";
+
+      sheetData.push({
+        collection: collectionName,
+        customer: customer.name,
+        channel_name: channelName,
+        channel_id: channelId
+      });
+    }
+
+    // Check if there are customers with multiple channels
+    if (multiChannelCustomers.length > 0) {
+      const errorMsg = "VALIDATION ERROR: The following customers have MORE THAN 1 channel associated with them.\n\n" +
+        "This script only supports customer objects with exactly 1 channel.\n\n" +
+        "Customers with multiple channels:\n" +
+        multiChannelCustomers.map(c => `- ${c.name} (${c.channelCount} channels: ${c.channels})`).join('\n') +
+        "\n\nPlease resolve this in the ClearFeed webapp before running the sync.";
+
+      safeAlert("Validation Error", errorMsg);
+      Logger.log("Validation failed: customers with multiple channels found");
+      return;
+    }
+
+    // Clear existing data in sheet (except header)
+    const sheet = getSheet();
+    const lastRow = sheet.getLastRow();
+
+    if (lastRow > 1) {
+      sheet.getRange(2, 1, lastRow - 1, 4).clearContent();
+    }
+
+    // Set header if not present
+    if (lastRow < 1) {
+      sheet.getRange(1, 1, 1, 4).setValues([["Collection", "Customer", "Channel Name", "Channel ID"]]);
+      sheet.getRange(1, 1, 1, 4).setFontWeight("bold");
+    }
+
+    // Write data to sheet
+    if (sheetData.length > 0) {
+      const values = sheetData.map(row => [row.collection, row.customer, row.channel_name, row.channel_id]);
+      sheet.getRange(2, 1, sheetData.length, 4).setValues(values);
+
+      const successMsg = `✅ Successfully populated sheet with ${sheetData.length} customer-channel mappings.\n\n` +
+        `The sheet has been populated with the following format:\n` +
+        `Collection | Customer | Channel Name | Channel ID\n\n` +
+        `Auto-sync will now run every 1 hour to keep the sheet in sync with changes made via the webapp.`;
+
+      safeAlert("Population Complete", successMsg);
+      Logger.log(`Successfully populated sheet with ${sheetData.length} mappings`);
+
+      // Setup auto-sync trigger
+      setupAutoSyncTrigger_();
+
+    } else {
+      safeAlert("No Data Found", "No customers with channels found in your ClearFeed account.");
+      Logger.log("No customers with channels found");
+    }
+
+  } catch (error) {
+    Logger.log(`Error during population: ${error.toString()}`);
+    safeAlert("Population Error", `An error occurred: ${error.toString()}`);
+  }
+}
+
+/**
+ * Sync customer-centric changes from sheet to ClearFeed
+ * - MOVE: Moves entire customer to different collection
+ * - DELETE: Unmonitors channel (marks inactive)
+ */
+function syncCustomerCentricChanges() {
+  const runStartedAt = new Date();
+
+  try {
+    Logger.log("Starting customer-centric sync...");
+
+    // Validate configuration
+    if (!CONFIG.API_KEY || CONFIG.API_KEY === "") {
+      safeAlert("Configuration Error", "Please update CONFIG.API_KEY with your ClearFeed API key.");
+      return;
+    }
+
+    // Read data from the sheet
+    const sheetData = readCustomerCentricSheetData();
+    if (sheetData.length === 0) {
+      safeAlert("No Data", "No customer-channel mappings found in the sheet.");
+      return;
+    }
+    Logger.log(`Read ${sheetData.length} customer-channel mappings from sheet`);
+
+    // Fetch current state from ClearFeed
+    const collections = fetchCollections();
+    const customers = fetchAllCustomers();
+    Logger.log(`Fetched ${collections.length} collections and ${customers.length} customers from ClearFeed`);
+
+    // Generate action plan
+    const plan = generateCustomerCentricPlan(sheetData, collections, customers);
+    Logger.log("Action plan generated");
+
+    // Display the plan
+    const planMessage = formatCustomerCentricPlanMessage(plan);
+    safeAlert("Sync Plan", planMessage);
+
+    // Check if we should execute
+    const isInteractive = isInteractiveMode();
+    let shouldExecute = false;
+
+    if (isInteractive) {
+      const ui = SpreadsheetApp.getUi();
+      const response = ui.alert(
+        "Confirm Sync",
+        "Do you want to execute this plan?",
+        ui.ButtonSet.YES_NO
+      );
+      shouldExecute = (response === ui.Button.YES);
+    } else {
+      shouldExecute = true;
+      Logger.log("Non-interactive mode: executing plan automatically");
+    }
+
+    if (shouldExecute) {
+      // Execute the plan
+      const results = executeCustomerCentricPlan(plan);
+      const resultMessage = formatCustomerCentricResultMessage(results);
+      safeAlert("Sync Results", resultMessage);
+      Logger.log("Customer-centric sync completed");
+    } else {
+      Logger.log("Sync cancelled by user");
+    }
+
+  } catch (error) {
+    Logger.log(`Error during sync: ${error.toString()}`);
+    safeAlert("Sync Error", `An error occurred: ${error.toString()}`);
+  }
+}
+
+/**
+ * Read customer-centric sheet data
+ * Expects format: Collection | Customer | Channel Name | Channel ID
+ */
+function readCustomerCentricSheetData() {
+  const sheet = getSheet();
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow < 2) {
+    return [];
+  }
+
+  const data = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
+  const mappings = [];
+
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    const collectionName = row[0];
+    const customerName = row[1];
+    const channelName = row[2];
+    const channelId = row[3];
+
+    // Skip rows with missing required data
+    if (!collectionName || !customerName || !channelId) {
+      continue;
+    }
+
+    mappings.push({
+      collection_name: String(collectionName).trim(),
+      customer_name: String(customerName).trim(),
+      channel_name: channelName ? String(channelName).trim() : '',
+      channel_id: String(channelId).trim(),
+      _normalized_collection: normalizeCollectionName(collectionName),
+      _normalized_customer: normalizeCollectionName(customerName)
+    });
+  }
+
+  return mappings;
+}
+
+/**
+ * Generate customer-centric action plan
+ */
+function generateCustomerCentricPlan(sheetData, collections, customers) {
+  // Build lookup structures
+  const collectionNameToId = {};
+  for (const col of collections) {
+    collectionNameToId[normalizeCollectionName(col.name)] = col.id;
+  }
+
+  const customerNameToCustomer = {};
+  for (const customer of customers) {
+    customerNameToCustomer[normalizeCollectionName(customer.name)] = customer;
+  }
+
+  const plan = {
+    toMove: [],
+    toDelete: [],
+    customersNotFound: [],
+    collectionsNotFound: []
+  };
+
+  const actualCustomerIds = new Set(customers.map(c => c.id));
+  const desiredCustomerIds = new Set();
+
+  // Analyze sheet data
+  for (const mapping of sheetData) {
+    const normalizedCol = mapping._normalized_collection;
+    const normalizedCust = mapping._normalized_customer;
+
+    // Check if collection exists
+    if (!collectionNameToId[normalizedCol]) {
+      plan.collectionsNotFound.push(mapping.collection_name);
+      continue;
+    }
+
+    // Check if customer exists
+    const customer = customerNameToCustomer[normalizedCust];
+    if (!customer) {
+      plan.customersNotFound.push(mapping.customer_name);
+      continue;
+    }
+
+    desiredCustomerIds.add(customer.id);
+
+    const desiredCollectionId = collectionNameToId[normalizedCol];
+
+    // Check if customer needs to be moved
+    if (customer.collection_id !== desiredCollectionId) {
+      let fromCollectionName = "Unknown";
+      for (const col of collections) {
+        if (col.id === customer.collection_id) {
+          fromCollectionName = col.name;
+          break;
+        }
+      }
+
+      plan.toMove.push({
+        customer_id: customer.id,
+        customer_name: mapping.customer_name,
+        channel_id: mapping.channel_id,
+        channel_name: mapping.channel_name || mapping.channel_id,
+        from_collection: fromCollectionName,
+        to_collection: mapping.collection_name,
+        to_collection_id: desiredCollectionId
+      });
+    }
+  }
+
+  // Find customers to delete (in actual but not in desired)
+  for (const customer of customers) {
+    if (!desiredCustomerIds.has(customer.id) && customer.channel_ids && customer.channel_ids.length > 0) {
+      const channelId = customer.channel_ids[0];
+      let channelName = channelId;
+
+      // Find channel name
+      for (const col of collections) {
+        for (const ch of (col.channels || [])) {
+          if (ch.id === channelId && ch.status !== 'inactive') {
+            channelName = ch.name || channelId;
+            break;
+          }
+        }
+      }
+
+      let collectionName = "Unknown";
+      for (const col of collections) {
+        if (col.id === customer.collection_id) {
+          collectionName = col.name;
+          break;
+        }
+      }
+
+      plan.toDelete.push({
+        customer_id: customer.id,
+        customer_name: customer.name,
+        channel_id: channelId,
+        channel_name: channelName,
+        collection_name: collectionName
+      });
+    }
+  }
+
+  return plan;
+}
+
+/**
+ * Format customer-centric plan message
+ */
+function formatCustomerCentricPlanMessage(plan) {
+  const lines = [];
+
+  lines.push("CUSTOMER-CENTRIC SYNC PLAN");
+  lines.push("=========================");
+  lines.push("");
+
+  // Customers not found
+  if (plan.customersNotFound.length > 0) {
+    lines.push(`⚠️  Customers NOT FOUND in ClearFeed:`);
+    for (const custName of plan.customersNotFound) {
+      lines.push(`   - ${custName}`);
+    }
+    lines.push("");
+  }
+
+  // Collections not found
+  if (plan.collectionsNotFound.length > 0) {
+    lines.push(`⚠️  Collections NOT FOUND in ClearFeed:`);
+    for (const colName of plan.collectionsNotFound) {
+      lines.push(`   - ${colName}`);
+    }
+    lines.push("");
+  }
+
+  // Customers to move
+  if (plan.toMove.length > 0) {
+    lines.push(`🔄 Customers to MOVE: ${plan.toMove.length}`);
+    for (const item of plan.toMove) {
+      lines.push(`   ~ ${item.customer_name} (${item.channel_name})`);
+      lines.push(`     ${item.from_collection} → ${item.to_collection}`);
+    }
+    lines.push("");
+  }
+
+  // Channels to delete
+  if (plan.toDelete.length > 0) {
+    lines.push(`🗑️  Channels to UNMONITOR: ${plan.toDelete.length}`);
+    for (const item of plan.toDelete) {
+      lines.push(`   - ${item.channel_name} (${item.channel_id}) from ${item.collection_name}`);
+      lines.push(`     Customer: ${item.customer_name}`);
+    }
+    lines.push("");
+  }
+
+  if (!CONFIG.INCLUDE_DELETES && plan.toDelete.length > 0) {
+    lines.push("⚠️  WARNING: Unmonitor operations are SKIPPED (CONFIG.INCLUDE_DELETES = false)");
+    lines.push("");
+  }
+
+  // Summary
+  if (plan.toMove.length === 0 && plan.toDelete.length === 0) {
+    lines.push("✅ No changes needed - sheet is already in sync!");
+  } else {
+    lines.push("SUMMARY:");
+    lines.push(`  Move: ${plan.toMove.length}`);
+    lines.push(`  Unmonitor: ${plan.toDelete.length} ${!CONFIG.INCLUDE_DELETES ? '(skipped)' : ''}`);
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Execute customer-centric plan
+ */
+function executeCustomerCentricPlan(plan) {
+  const results = {
+    moveSuccess: 0,
+    moveFailed: 0,
+    deleteSuccess: 0,
+    deleteFailed: 0,
+    deleteSkipped: 0,
+    failures: []
+  };
+
+  // Execute moves (move entire customer to different collection)
+  for (const item of plan.toMove) {
+    try {
+      const result = moveCustomer(item.customer_id, item.to_collection_id);
+      if (result.success) {
+        results.moveSuccess++;
+        Logger.log(`✅ Moved customer ${item.customer_name} to ${item.to_collection}`);
+      } else {
+        results.moveFailed++;
+        Logger.log(`❌ Failed to move customer ${item.customer_name}: ${result.error}`);
+        results.failures.push(`Move failed: ${item.customer_name}. ${result.error}`);
+      }
+    } catch (error) {
+      results.moveFailed++;
+      Logger.log(`❌ Error moving customer ${item.customer_name}: ${error.toString()}`);
+      results.failures.push(`Move error: ${item.customer_name}. ${error.toString()}`);
+    }
+  }
+
+  // Execute deletes (unmonitor channels)
+  for (const item of plan.toDelete) {
+    if (!CONFIG.INCLUDE_DELETES) {
+      results.deleteSkipped++;
+      Logger.log(`⏭️ Skipped unmonitor of channel ${item.channel_name} (${item.channel_id}) - deletes disabled`);
+      continue;
+    }
+
+    try {
+      const result = deleteChannel(item.channel_id);
+      if (result.success) {
+        results.deleteSuccess++;
+        Logger.log(`✅ Unmonitored channel ${item.channel_name} (${item.channel_id})`);
+      } else {
+        results.deleteFailed++;
+        Logger.log(`❌ Failed to unmonitor channel ${item.channel_name}: ${result.error}`);
+        results.failures.push(`Unmonitor failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
+      }
+    } catch (error) {
+      results.deleteFailed++;
+      Logger.log(`❌ Error unmonitoring channel ${item.channel_name}: ${error.toString()}`);
+      results.failures.push(`Unmonitor error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Format customer-centric result message
+ */
+function formatCustomerCentricResultMessage(results) {
+  const lines = [];
+
+  lines.push("SYNC RESULTS");
+  lines.push("=============");
+  lines.push("");
+
+  if (results.moveSuccess > 0) {
+    lines.push(`✅ Moved: ${results.moveSuccess} customer(s)`);
+  }
+  if (results.moveFailed > 0) {
+    lines.push(`❌ Move failed: ${results.moveFailed} customer(s)`);
+  }
+
+  if (results.deleteSkipped > 0) {
+    lines.push(`⏭️  Unmonitor skipped: ${results.deleteSkipped} channel(s) (deletes disabled)`);
+  }
+  if (results.deleteSuccess > 0) {
+    lines.push(`✅ Unmonitored: ${results.deleteSuccess} channel(s)`);
+  }
+  if (results.deleteFailed > 0) {
+    lines.push(`❌ Unmonitor failed: ${results.deleteFailed} channel(s)`);
+  }
+
+  lines.push("");
+
+  const totalActions = results.moveSuccess + results.deleteSuccess;
+  const totalFailed = results.moveFailed + results.deleteFailed;
+
+  if (totalFailed === 0 && totalActions > 0) {
+    lines.push("✅ All actions completed successfully!");
+  } else if (totalFailed > 0) {
+    lines.push(`⚠️  Some actions failed. Check logs for details.`);
+  } else {
+    lines.push("No changes were made.");
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Setup auto-sync trigger (runs every 1 hour)
+ */
+function setupAutoSyncTrigger() {
+  setupAutoSyncTrigger_();
+  safeAlert("Auto-Sync Enabled", "The sheet will now sync with ClearFeed every 1 hour.\n\nChanges made via the webapp will be automatically reflected in the sheet.");
+}
+
+/**
+ * Internal function to setup auto-sync trigger
+ */
+function setupAutoSyncTrigger_() {
+  // Delete existing triggers if any
+  deleteAutoSyncTrigger_();
+
+  // Create new trigger
+  ScriptApp.newTrigger('autoSyncCustomerMappings')
+    .timeBased()
+    .everyHours(1)
+    .create();
+
+  Logger.log("Auto-sync trigger created (runs every 1 hour)");
+}
+
+/**
+ * Delete auto-sync trigger
+ */
+function deleteAutoSyncTrigger() {
+  deleteAutoSyncTrigger_();
+  safeAlert("Auto-Sync Disabled", "Auto-sync has been disabled.\n\nYou can re-enable it from the menu.");
+}
+
+/**
+ * Internal function to delete auto-sync trigger
+ */
+function deleteAutoSyncTrigger_() {
+  const triggers = ScriptApp.getProjectTriggers();
+
+  for (const trigger of triggers) {
+    if (trigger.getHandlerFunction() === 'autoSyncCustomerMappings') {
+      ScriptApp.deleteTrigger(trigger);
+      Logger.log("Deleted existing auto-sync trigger");
+    }
+  }
+}
+
+/**
+ * Auto-sync function (triggered every 1 hour)
+ * Syncs changes from ClearFeed to the sheet
+ */
+function autoSyncCustomerMappings() {
+  Logger.log("Running auto-sync at " + new Date().toISOString());
+
+  try {
+    // Fetch current state from ClearFeed
+    const collections = fetchCollections();
+    const customers = fetchAllCustomers();
+
+    // Build current state mappings
+    const currentMappings = [];
+    const collectionIdToName = {};
+    const multiChannelCustomers = [];
+
+    for (const col of collections) {
+      collectionIdToName[col.id] = col.name;
+    }
+
+    for (const customer of customers) {
+      const channelIds = customer.channel_ids || [];
+
+      // Skip customers with no channels or multiple channels
+      if (channelIds.length === 0) {
+        continue;
+      } else if (channelIds.length > 1) {
+        multiChannelCustomers.push({
+          name: customer.name,
+          channelCount: channelIds.length
+        });
+        continue;
+      }
+
+      const channelId = channelIds[0];
+      let channelName = channelId;
+
+      for (const col of collections) {
+        for (const ch of (col.channels || [])) {
+          if (ch.id === channelId) {
+            channelName = ch.name || channelId;
+            break;
+          }
+        }
+      }
+
+      currentMappings.push({
+        collection: collectionIdToName[customer.collection_id] || "Unknown",
+        customer: customer.name,
+        channel_name: channelName,
+        channel_id: channelId
+      });
+    }
+
+    // Clear and repopulate sheet
+    const sheet = getSheet();
+    const lastRow = sheet.getLastRow();
+
+    if (lastRow > 1) {
+      sheet.getRange(2, 1, lastRow - 1, 4).clearContent();
+    }
+
+    if (currentMappings.length > 0) {
+      const values = currentMappings.map(row => [row.collection, row.customer, row.channel_name, row.channel_id]);
+      sheet.getRange(2, 1, currentMappings.length, 4).setValues(values);
+      Logger.log(`Auto-sync updated sheet with ${currentMappings.length} mappings`);
+    }
+
+  } catch (error) {
+    Logger.log(`Auto-sync error: ${error.toString()}`);
+  }
+}
+
+/**
+ * Test customer connection for customer-centric model
+ */
+function testCustomerConnection() {
+  try {
+    Logger.log("Testing Customer-Centric API connection...");
+
+    if (!CONFIG.API_KEY || CONFIG.API_KEY === "") {
+      safeAlert("Configuration Error", "Please update CONFIG.API_KEY with your ClearFeed API key.");
+      return;
+    }
+
+    const collections = fetchCollections();
+    const customers = fetchAllCustomers();
+
+    // Count customers with exactly 1 channel
+    let singleChannelCustomers = 0;
+    let multiChannelCustomers = 0;
+    let emptyCustomers = 0;
+
+    for (const customer of customers) {
+      const channelCount = customer.channel_ids ? customer.channel_ids.length : 0;
+      if (channelCount === 0) {
+        emptyCustomers++;
+      } else if (channelCount === 1) {
+        singleChannelCustomers++;
+      } else {
+        multiChannelCustomers++;
+      }
+    }
+
+    const message = `✅ Connection successful!\n\n` +
+      `Collections: ${collections.length}\n` +
+      `Total Customers: ${customers.length}\n` +
+      `Customers with 1 channel: ${singleChannelCustomers}\n` +
+      `Customers with 0 channels: ${emptyCustomers}\n` +
+      `Customers with 2+ channels: ${multiChannelCustomers}\n\n` +
+      `Note: This script only supports customers with exactly 1 channel.`;
+
+    safeAlert("Connection Test", message);
+    Logger.log("Connection test successful");
+
+  } catch (error) {
+    Logger.log(`Connection test failed: ${error.toString()}`);
+    safeAlert("Connection Failed", `Error: ${error.toString()}`);
+  }
 }
 
 // =============================================================================
@@ -410,6 +1133,89 @@ function deleteChannel(channelId) {
       'Authorization': `Bearer ${CONFIG.API_KEY}`,
       'Content-Type': 'application/json'
     },
+    muteHttpExceptions: true
+  });
+
+  const code = response.getResponseCode();
+  if (code >= 200 && code < 300) {
+    return { success: true };
+  } else {
+    return {
+      success: false,
+      error: `API error (${code}): ${response.getContentText()}`
+    };
+  }
+}
+
+// =============================================================================
+// Customer-Centric Inbox Model API Functions
+// =============================================================================
+
+/**
+ * Fetch all customers with pagination
+ * Returns array of customer objects
+ */
+function fetchAllCustomers() {
+  const PAGE_SIZE = 100;
+  const DELAY_MS = 500;
+  let allCustomers = [];
+  let nextCursor = null;
+  let pageCount = 0;
+
+  do {
+    const url = `${BASE_URL}/customers?limit=${PAGE_SIZE}${nextCursor ? '&next_cursor=' + nextCursor : ''}`;
+
+    const response = UrlFetchApp.fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${CONFIG.API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      muteHttpExceptions: true
+    });
+
+    const responseCode = response.getResponseCode();
+
+    if (responseCode !== 200) {
+      throw new Error(`API request failed with status ${responseCode}: ${response.getContentText()}`);
+    }
+
+    const data = JSON.parse(response.getContentText());
+    allCustomers = allCustomers.concat(data.customers || []);
+
+    nextCursor = data.response_metadata?.next_cursor || null;
+    pageCount++;
+
+    // Delay between pages to avoid rate limiting
+    if (nextCursor) {
+      Utilities.sleep(DELAY_MS);
+    }
+
+  } while (nextCursor);
+
+  Logger.log(`Fetched ${allCustomers.length} customers across ${pageCount} pages`);
+  return allCustomers;
+}
+
+/**
+ * Move a customer to a different collection
+ * Returns {success: boolean, error: string}
+ */
+function moveCustomer(customerId, collectionId) {
+  const url = `${BASE_URL}/customers/${customerId}`;
+
+  const payload = {
+    collection_id: collectionId
+  };
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${CONFIG.API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    payload: JSON.stringify(payload),
     muteHttpExceptions: true
   });
 
