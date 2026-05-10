@@ -95,7 +95,6 @@ Use this model if your ClearFeed account organizes channels by **Customers**. Ea
 |--------|--------------|
 | **Move Customer** | Change the **Collection** column for a customer, then sync. The customer (and their channel) moves to the new collection. |
 | **Delete Channel** | Delete the entire row, then sync with `INCLUDE_DELETES=true`. The channel is marked as inactive in ClearFeed. |
-| **No Add Operation** | New customers must be created via the ClearFeed webapp first. After auto-sync runs, they'll appear in your sheet. |
 
 ### Important Notes
 
