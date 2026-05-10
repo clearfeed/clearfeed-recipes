@@ -600,12 +600,14 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
     collectionsNotFound: []
   };
 
-  // Build actual state: customer_id -> collection_id (from API)
-  const actualCustomerToCollection = {};
+  // Build actual state: channel_id -> {customer_id, collection_id, channel_name} (from API)
+  const actualChannelToCustomer = {};
   for (const customer of customers) {
     if (customer.channel_ids && customer.channel_ids.length > 0) {
       const channelId = customer.channel_ids[0];
-      actualCustomerToCollection[customer.id] = {
+      actualChannelToCustomer[channelId] = {
+        customer_id: customer.id,
+        customer_name: customer.name,
         collection_id: customer.collection_id,
         channel_id: channelId,
         channel_name: channelIdToName[channelId] || channelId
@@ -613,8 +615,8 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
     }
   }
 
-  // Build desired state: customer_id -> collection_id (from sheet)
-  const desiredCustomerToCollection = {};
+  // Build desired state: channel_id -> {customer_id, collection_id, customer_name} (from sheet)
+  const desiredChannelToCustomer = {};
   const customersInSheet = new Set();
 
   for (const mapping of sheetData) {
@@ -638,21 +640,22 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
     customersInSheet.add(customer.id);
 
     const desiredCollectionId = collectionNameToId[normalizedCol];
-    desiredCustomerToCollection[customer.id] = {
+    desiredChannelToCustomer[mapping.channel_id] = {
+      customer_id: customer.id,
+      customer_name: mapping.customer_name,
       collection_id: desiredCollectionId,
       collection_name: mapping.collection_name,
-      customer_name: mapping.customer_name,
       channel_id: mapping.channel_id,
       channel_name: mapping.channel_name || mapping.channel_id
     };
   }
 
   // Find customers to move: in both actual and desired, but different collection
-  for (const [customerId, desired] of Object.entries(desiredCustomerToCollection)) {
-    const actual = actualCustomerToCollection[customerId];
+  for (const [channelId, desired] of Object.entries(desiredChannelToCustomer)) {
+    const actual = actualChannelToCustomer[channelId];
 
     if (!actual) {
-      // Customer in sheet but not in API (shouldn't happen if data is consistent)
+      // Channel in sheet but not in API (shouldn't happen if data is consistent)
       continue;
     }
 
@@ -661,9 +664,9 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
       const fromCollectionName = collectionIdToName[actual.collection_id] || "Unknown";
 
       plan.toMove.push({
-        customer_id: customerId,
+        customer_id: actual.customer_id,
         customer_name: desired.customer_name,
-        channel_id: desired.channel_id,
+        channel_id: channelId,
         channel_name: desired.channel_name,
         from_collection: fromCollectionName,
         to_collection: desired.collection_name,
@@ -672,10 +675,10 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
     }
   }
 
-  // Find customers to delete: in actual but not in desired (row deleted from sheet)
-  for (const [customerId, actual] of Object.entries(actualCustomerToCollection)) {
-    if (!desiredCustomerToCollection[customerId]) {
-      // Customer not in sheet - mark for deletion
+  // Find channels to delete: in actual but not in desired (row deleted from sheet)
+  for (const [channelId, actual] of Object.entries(actualChannelToCustomer)) {
+    if (!desiredChannelToCustomer[channelId]) {
+      // Channel not in sheet - mark for deletion
       if (!CONFIG.INCLUDE_DELETES) {
         // Skip deletes if not enabled
         continue;
@@ -685,7 +688,7 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
       let isChannelActive = false;
       for (const col of collections) {
         for (const ch of (col.channels || [])) {
-          if (ch.id === actual.channel_id && ch.status !== 'inactive') {
+          if (ch.id === channelId && ch.status !== 'inactive') {
             isChannelActive = true;
             break;
           }
@@ -697,16 +700,12 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
         continue;
       }
 
-      const customer = customerNameToCustomer[normalizeCollectionName(
-        Object.values(customers).find(c => c.id === customerId)?.name || ""
-      )] || { name: "Unknown" };
-
       const collectionName = collectionIdToName[actual.collection_id] || "Unknown";
 
       plan.toDelete.push({
-        customer_id: customerId,
-        customer_name: customer.name,
-        channel_id: actual.channel_id,
+        customer_id: actual.customer_id,
+        customer_name: actual.customer_name,
+        channel_id: channelId,
         channel_name: actual.channel_name,
         collection_name: collectionName
       });
