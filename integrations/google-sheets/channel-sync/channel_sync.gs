@@ -567,13 +567,25 @@ function readCustomerCentricSheetData() {
 
 /**
  * Generate customer-centric action plan
- * Only processes changes made in the sheet, not differences between sheet and API
+ * Compares desired state (sheet) with actual state (API) like the Legacy Model
  */
 function generateCustomerCentricPlan(sheetData, collections, customers) {
   // Build lookup structures
   const collectionNameToId = {};
+  const collectionIdToName = {};
+  const channelIdToName = {};
+
   for (const col of collections) {
-    collectionNameToId[normalizeCollectionName(col.name)] = col.id;
+    const normalizedName = normalizeCollectionName(col.name);
+    collectionNameToId[normalizedName] = col.id;
+    collectionIdToName[col.id] = col.name;
+
+    // Track channel names from API
+    for (const ch of (col.channels || [])) {
+      if (ch.name) {
+        channelIdToName[ch.id] = ch.name;
+      }
+    }
   }
 
   const customerNameToCustomer = {};
@@ -588,10 +600,23 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
     collectionsNotFound: []
   };
 
-  const customersInSheet = new Set();
-  const customersInSheetByName = new Set(); // Track by normalized name for debugging
+  // Build actual state: customer_id -> collection_id (from API)
+  const actualCustomerToCollection = {};
+  for (const customer of customers) {
+    if (customer.channel_ids && customer.channel_ids.length > 0) {
+      const channelId = customer.channel_ids[0];
+      actualCustomerToCollection[customer.id] = {
+        collection_id: customer.collection_id,
+        channel_id: channelId,
+        channel_name: channelIdToName[channelId] || channelId
+      };
+    }
+  }
 
-  // Analyze sheet data - only process what's explicitly in the sheet
+  // Build desired state: customer_id -> collection_id (from sheet)
+  const desiredCustomerToCollection = {};
+  const customersInSheet = new Set();
+
   for (const mapping of sheetData) {
     const normalizedCol = mapping._normalized_collection;
     const normalizedCust = mapping._normalized_customer;
@@ -611,151 +636,78 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
     }
 
     customersInSheet.add(customer.id);
-    customersInSheetByName.add(normalizedCust);
 
     const desiredCollectionId = collectionNameToId[normalizedCol];
+    desiredCustomerToCollection[customer.id] = {
+      collection_id: desiredCollectionId,
+      collection_name: mapping.collection_name,
+      customer_name: mapping.customer_name,
+      channel_id: mapping.channel_id,
+      channel_name: mapping.channel_name || mapping.channel_id
+    };
+  }
 
-    // Only add to move list if customer is NOT already in the desired collection
-    if (customer.collection_id !== desiredCollectionId) {
-      let fromCollectionName = "Unknown";
-      for (const col of collections) {
-        if (col.id === customer.collection_id) {
-          fromCollectionName = col.name;
-          break;
-        }
-      }
+  // Find customers to move: in both actual and desired, but different collection
+  for (const [customerId, desired] of Object.entries(desiredCustomerToCollection)) {
+    const actual = actualCustomerToCollection[customerId];
+
+    if (!actual) {
+      // Customer in sheet but not in API (shouldn't happen if data is consistent)
+      continue;
+    }
+
+    // Only add to move list if collections differ
+    if (actual.collection_id !== desired.collection_id) {
+      const fromCollectionName = collectionIdToName[actual.collection_id] || "Unknown";
 
       plan.toMove.push({
-        customer_id: customer.id,
-        customer_name: mapping.customer_name,
-        channel_id: mapping.channel_id,
-        channel_name: mapping.channel_name || mapping.channel_id,
+        customer_id: customerId,
+        customer_name: desired.customer_name,
+        channel_id: desired.channel_id,
+        channel_name: desired.channel_name,
         from_collection: fromCollectionName,
-        to_collection: mapping.collection_name,
-        to_collection_id: desiredCollectionId
+        to_collection: desired.collection_name,
+        to_collection_id: desired.collection_id
       });
     }
   }
 
-  Logger.log(`Customers in sheet: ${customersInSheet.size} by ID, ${customersInSheetByName.size} by name`);
+  // Find customers to delete: in actual but not in desired (row deleted from sheet)
+  for (const [customerId, actual] of Object.entries(actualCustomerToCollection)) {
+    if (!desiredCustomerToCollection[customerId]) {
+      // Customer not in sheet - mark for deletion
+      if (!CONFIG.INCLUDE_DELETES) {
+        // Skip deletes if not enabled
+        continue;
+      }
 
-  // Find customers to delete (rows deleted by user from sheet)
-  // Only include customers who are NOT in the sheet (by ID match)
-  for (const customer of customers) {
-    // Skip if customer is currently in the sheet (row not deleted)
-    if (customersInSheet.has(customer.id)) {
-      continue;
-    }
-
-    // Double-check by name in case there's an ID mismatch issue
-    const normalizedName = normalizeCollectionName(customer.name);
-    if (customersInSheetByName.has(normalizedName)) {
-      Logger.log(`Skipping deletion for ${customer.name} - found by name in sheet despite ID mismatch`);
-      continue;
-    }
-
-    // Customer not in sheet by ID or name - only process if deletes enabled
-    if (!CONFIG.INCLUDE_DELETES) {
-      // Skip deletes entirely if not enabled
-      continue;
-    }
-
-    if (customer.channel_ids && customer.channel_ids.length > 0) {
-      const channelId = customer.channel_ids[0];
-      let channelName = channelId;
+      // Check if channel is still active
       let isChannelActive = false;
-
-      // Find channel name and check if active
       for (const col of collections) {
         for (const ch of (col.channels || [])) {
-          if (ch.id === channelId) {
-            if (ch.status !== 'inactive') {
-              channelName = ch.name || channelId;
-              isChannelActive = true;
-            }
+          if (ch.id === actual.channel_id && ch.status !== 'inactive') {
+            isChannelActive = true;
             break;
           }
         }
+        if (isChannelActive) break;
       }
 
-      // Only add to delete list if channel is active
       if (!isChannelActive) {
         continue;
       }
 
-      let collectionName = "Unknown";
-      for (const col of collections) {
-        if (col.id === customer.collection_id) {
-          collectionName = col.name;
-          break;
-        }
-      }
+      const customer = customerNameToCustomer[normalizeCollectionName(
+        Object.values(customers).find(c => c.id === customerId)?.name || ""
+      )] || { name: "Unknown" };
+
+      const collectionName = collectionIdToName[actual.collection_id] || "Unknown";
 
       plan.toDelete.push({
-        customer_id: customer.id,
+        customer_id: customerId,
         customer_name: customer.name,
-        channel_id: channelId,
-        channel_name: channelName,
-        collection_name: collectionName
-      });
-    }
-  }
-
-  // Find customers to delete (rows deleted by user from sheet)
-  // Only include customers who we KNOW were in the sheet before
-  // by checking if their customer name appears in our sheet data lookup
-  for (const customer of customers) {
-    // Skip if customer is currently in the sheet (row not deleted)
-    if (customersInSheet.has(customer.id)) {
-      continue;
-    }
-
-    // Customer not in sheet - but we should only delete if we can verify
-    // this customer was SUPPOSED to be managed via the sheet
-    // Since we don't track state between runs, the safest approach is:
-    // Only delete if INCLUDE_DELETES is explicitly enabled AND customer has active channel
-
-    if (!CONFIG.INCLUDE_DELETES) {
-      // Skip deletes entirely if not enabled - prevents accidental deletions
-      continue;
-    }
-
-    if (customer.channel_ids && customer.channel_ids.length > 0) {
-      const channelId = customer.channel_ids[0];
-      let channelName = channelId;
-      let isChannelActive = false;
-
-      // Find channel name and check if active
-      for (const col of collections) {
-        for (const ch of (col.channels || [])) {
-          if (ch.id === channelId) {
-            if (ch.status !== 'inactive') {
-              channelName = ch.name || channelId;
-              isChannelActive = true;
-            }
-            break;
-          }
-        }
-      }
-
-      // Only add to delete list if channel is active
-      if (!isChannelActive) {
-        continue;
-      }
-
-      let collectionName = "Unknown";
-      for (const col of collections) {
-        if (col.id === customer.collection_id) {
-          collectionName = col.name;
-          break;
-        }
-      }
-
-      plan.toDelete.push({
-        customer_id: customer.id,
-        customer_name: customer.name,
-        channel_id: channelId,
-        channel_name: channelName,
+        channel_id: actual.channel_id,
+        channel_name: actual.channel_name,
         collection_name: collectionName
       });
     }
