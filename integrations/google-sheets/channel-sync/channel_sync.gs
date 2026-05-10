@@ -600,7 +600,7 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
     collectionsNotFound: []
   };
 
-  // Build actual state: channel_id -> {customer_id, collection_id, channel_name} (from API)
+  // Build actual state: channel_id -> {customer_id, collection_id, channel_name, version} (from API)
   const actualChannelToCustomer = {};
   for (const customer of customers) {
     if (customer.channel_ids && customer.channel_ids.length > 0) {
@@ -610,7 +610,8 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
         customer_name: customer.name,
         collection_id: customer.collection_id,
         channel_id: channelId,
-        channel_name: channelIdToName[channelId] || channelId
+        channel_name: channelIdToName[channelId] || channelId,
+        version: customer.version || 0
       };
     }
   }
@@ -670,7 +671,8 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
         channel_name: desired.channel_name,
         from_collection: fromCollectionName,
         to_collection: desired.collection_name,
-        to_collection_id: desired.collection_id
+        to_collection_id: desired.collection_id,
+        version: actual.version
       });
     }
   }
@@ -795,7 +797,7 @@ function executeCustomerCentricPlan(plan) {
   // Execute moves (move entire customer to different collection)
   for (const item of plan.toMove) {
     try {
-      const result = moveCustomer(item.customer_id, item.to_collection_id);
+      const result = moveCustomer(item.customer_id, item.to_collection_id, item.version);
       if (result.success) {
         results.moveSuccess++;
         Logger.log(`✅ Moved customer ${item.customer_name} to ${item.to_collection}`);
@@ -1333,11 +1335,12 @@ function fetchAllCustomers() {
  * Move a customer to a different collection
  * Returns {success: boolean, error: string}
  */
-function moveCustomer(customerId, collectionId) {
+function moveCustomer(customerId, collectionId, version) {
   const url = `${BASE_URL}/customers/${customerId}`;
 
   const payload = {
-    collection_id: collectionId
+    collection_id: collectionId,
+    version: version
   };
 
   const response = UrlFetchApp.fetch(url, {
