@@ -10,6 +10,7 @@ const CONFIG = {
   CREATE_EMPTY_CUSTOMER: false, // Whether to create an empty customer object when adding channels (OLD MODEL ONLY)
   SET_OWNER: false, // Whether to set the owner field when adding channels (OLD MODEL ONLY)
   IS_ON_CUSTOMER_INBOX_MODEL: true, // Set to true for Customer-Centric Inbox Model (NEW), false for old model
+  AUTO_SYNC_INTERVAL_MINUTES: 15, // Auto-sync interval in minutes (minimum 1, default 15)
 };
 
 const BASE_URL = "https://api.clearfeed.app/v1/rest";
@@ -42,7 +43,7 @@ function onOpen() {
       .addItem('📥 Populate Initial Mappings', 'populateInitialMappings')
       .addItem('🔄 Sync Customer Changes', 'syncCustomerCentricChanges')
       .addSeparator()
-      .addItem('⏰ Setup Auto-Sync (1 hour)', 'setupAutoSyncTrigger')
+      .addItem('⏰ Setup Auto-Sync', 'setupAutoSyncTrigger')
       .addItem('🛑 Stop Auto-Sync', 'deleteAutoSyncTrigger')
       .addSeparator()
       .addItem('🧪 Test Connection', 'testCustomerConnection')
@@ -432,10 +433,11 @@ function populateInitialMappings() {
       const values = sheetData.map(row => [row.collection, row.customer, row.channel_name, row.channel_id]);
       sheet.getRange(2, 1, sheetData.length, 4).setValues(values);
 
+      const intervalMinutes = CONFIG.AUTO_SYNC_INTERVAL_MINUTES || 15;
       const successMsg = `✅ Successfully populated sheet with ${sheetData.length} customer-channel mappings.\n\n` +
         `The sheet has been populated with the following format:\n` +
         `Collection | Customer | Channel Name | Channel ID\n\n` +
-        `Auto-sync will now run every 1 hour to keep the sheet in sync with changes made via the webapp.`;
+        `Auto-sync will now run every ${intervalMinutes} minutes to keep the sheet in sync with changes made via the webapp.`;
 
       safeAlert("Population Complete", successMsg);
       Logger.log(`Successfully populated sheet with ${sheetData.length} mappings`);
@@ -885,11 +887,12 @@ function formatCustomerCentricResultMessage(results) {
 }
 
 /**
- * Setup auto-sync trigger (runs every 1 hour)
+ * Setup auto-sync trigger
  */
 function setupAutoSyncTrigger() {
   setupAutoSyncTrigger_();
-  safeAlert("Auto-Sync Enabled", "The sheet will now sync with ClearFeed every 1 hour.\n\nChanges made via the webapp will be automatically reflected in the sheet.");
+  const intervalMinutes = CONFIG.AUTO_SYNC_INTERVAL_MINUTES || 15;
+  safeAlert("Auto-Sync Enabled", `The sheet will now sync with ClearFeed every ${intervalMinutes} minutes.\n\nChanges made via the webapp will be automatically reflected in the sheet.`);
 }
 
 /**
@@ -899,13 +902,28 @@ function setupAutoSyncTrigger_() {
   // Delete existing triggers if any
   deleteAutoSyncTrigger_();
 
-  // Create new trigger
-  ScriptApp.newTrigger('autoSyncCustomerMappings')
-    .timeBased()
-    .everyHours(1)
-    .create();
+  // Determine interval based on configuration
+  const intervalMinutes = CONFIG.AUTO_SYNC_INTERVAL_MINUTES || 15;
 
-  Logger.log("Auto-sync trigger created (runs every 1 hour)");
+  // Create new trigger
+  const triggerBuilder = ScriptApp.newTrigger('autoSyncCustomerMappings')
+    .timeBased();
+
+  // Google Apps Script supports everyMinutes(1-15) and everyHours(1-12)
+  if (intervalMinutes <= 15) {
+    triggerBuilder.everyMinutes(intervalMinutes);
+  } else {
+    // Convert to hours (round up to ensure minimum interval is met)
+    const hours = Math.ceil(intervalMinutes / 60);
+    if (hours > 12) {
+      throw new Error("AUTO_SYNC_INTERVAL_MINUTES cannot exceed 720 minutes (12 hours)");
+    }
+    triggerBuilder.everyHours(hours);
+  }
+
+  triggerBuilder.create();
+
+  Logger.log(`Auto-sync trigger created (runs every ${intervalMinutes} minutes)`);
 }
 
 /**
