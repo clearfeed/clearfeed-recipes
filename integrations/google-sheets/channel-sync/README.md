@@ -43,7 +43,6 @@ const CONFIG = {
   IS_ON_CUSTOMER_INBOX_MODEL: true,     // true = Customer-Centric, false = Legacy
   INCLUDE_DELETES: false,               // Enable to allow channel deletion
   SHEET_NAME: "Channel Mappings",       // Sheet tab name
-  AUTO_SYNC_INTERVAL_MINUTES: 15,       // Auto-sync frequency (default: 15 minutes)
 };
 ```
 
@@ -86,7 +85,7 @@ Use this model if your ClearFeed account organizes channels by **Customers**. Ea
 2. **Populate Sheet** - Click **📥 Populate Initial Mappings**
    - Fetches all customers from ClearFeed
    - Validates each customer has exactly 1 channel
-   - Sets up auto-sync (every 15 minutes by default)
+   - Sets up auto-sync (every 30 minutes)
 3. **Sync Changes** - Click **🔄 Sync Customer Changes** after making changes to the sheet
 
 ### Operations
@@ -101,7 +100,7 @@ Use this model if your ClearFeed account organizes channels by **Customers**. Ea
 - **One channel per customer only** - Script will error if any customer has multiple channels
 - **Customer name matching** - Customer names in sheet must match ClearFeed exactly (case-insensitive)
 - **Collection name matching** - Collection names in sheet must match ClearFeed exactly (case-insensitive)
-- **Auto-sync** - Runs every 15 minutes (configurable) to reflect webapp changes in your sheet
+- **Auto-sync** - Runs every 30 minutes to reflect webapp changes in your sheet
 - **Version-based updates** - Move operations use optimistic locking to prevent conflicts
 
 ### Menu Options
@@ -110,7 +109,7 @@ Use this model if your ClearFeed account organizes channels by **Customers**. Ea
 |--------|---------|
 | 📥 Populate Initial Mappings | First-time setup: fetches customers and populates sheet |
 | 🔄 Sync Customer Changes | Syncs your sheet changes to ClearFeed (shows preview first) |
-| ⏰ Setup Auto-Sync | Enables automatic sync at configured interval |
+| ⏰ Setup Auto-Sync | Enables automatic sync (runs every 30 minutes) |
 | 🛑 Stop Auto-Sync | Disables automatic sync |
 | 🧪 Test Connection | Validates API and shows customer statistics |
 | 📋 View Logs | Instructions for viewing detailed execution logs |
@@ -171,7 +170,6 @@ Use this model if your ClearFeed account organizes channels directly by **Collec
 | `INCLUDE_DELETES` | Allow channel deletion when rows are removed | `false` |
 | `SHEET_NAME` | Sheet tab name | `"Channel Mappings"` |
 | `SPREADSHEET_ID` | Use a different spreadsheet (empty = current) | *(empty)* |
-| `AUTO_SYNC_INTERVAL_MINUTES` | Auto-sync frequency in minutes (Customer-Centric model only) | `15` |
 | `CREATE_EMPTY_CUSTOMER` | Create empty customer object when adding channels (Legacy only) | `false` |
 | `SET_OWNER` | Set owner field when adding channels (Legacy only) | `false` |
 
@@ -253,9 +251,9 @@ This script uses the [ClearFeed REST API](https://docs.clearfeed.ai/api).
 
 For detailed API documentation, request schemas, and response formats, visit:
 - [ClearFeed REST API Documentation](https://docs.clearfeed.ai/api)
-- [Collections API](https://docs.clearfeed.api/reference/v1/rest-api-resources#collections)
-- [Customers API](https://docs.clearfeed.api/reference/v1/rest-api-resources#customers)
-- [Channels API](https://docs.clearfeed.api/reference/v1/rest-api-resources#channels)
+- [Collections API](https://docs.clearfeed.ai/api/reference/api-reference/collections)
+- [Customers API](https://docs.clearfeed.ai/api/reference/api-reference/customers)
+- [Channels API](https://docs.clearfeed.ai/api/reference/api-reference/channels)
 
 ---
 

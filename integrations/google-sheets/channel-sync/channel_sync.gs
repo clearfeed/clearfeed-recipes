@@ -10,7 +10,6 @@ const CONFIG = {
   CREATE_EMPTY_CUSTOMER: false, // Whether to create an empty customer object when adding channels (OLD MODEL ONLY)
   SET_OWNER: false, // Whether to set the owner field when adding channels (OLD MODEL ONLY)
   IS_ON_CUSTOMER_INBOX_MODEL: true, // Set to true for Customer-Centric Inbox Model (NEW), false for old model
-  AUTO_SYNC_INTERVAL_MINUTES: 15, // Auto-sync interval in minutes (minimum 1, default 15)
 };
 
 const BASE_URL = "https://api.clearfeed.app/v1/rest";
@@ -433,11 +432,10 @@ function populateInitialMappings() {
       const values = sheetData.map(row => [row.collection, row.customer, row.channel_name, row.channel_id]);
       sheet.getRange(2, 1, sheetData.length, 4).setValues(values);
 
-      const intervalMinutes = CONFIG.AUTO_SYNC_INTERVAL_MINUTES || 15;
       const successMsg = `✅ Successfully populated sheet with ${sheetData.length} customer-channel mappings.\n\n` +
         `The sheet has been populated with the following format:\n` +
         `Collection | Customer | Channel Name | Channel ID\n\n` +
-        `Auto-sync will now run every ${intervalMinutes} minutes to keep the sheet in sync with changes made via the webapp.`;
+        `Auto-sync will now run every 30 minutes to keep the sheet in sync with changes made via the webapp.`;
 
       safeAlert("Population Complete", successMsg);
       Logger.log(`Successfully populated sheet with ${sheetData.length} mappings`);
@@ -891,8 +889,7 @@ function formatCustomerCentricResultMessage(results) {
  */
 function setupAutoSyncTrigger() {
   setupAutoSyncTrigger_();
-  const intervalMinutes = CONFIG.AUTO_SYNC_INTERVAL_MINUTES || 15;
-  safeAlert("Auto-Sync Enabled", `The sheet will now sync with ClearFeed every ${intervalMinutes} minutes.\n\nChanges made via the webapp will be automatically reflected in the sheet.`);
+  safeAlert("Auto-Sync Enabled", "The sheet will now sync with ClearFeed every 30 minutes.\n\nChanges made via the webapp will be automatically reflected in the sheet.");
 }
 
 /**
@@ -902,28 +899,13 @@ function setupAutoSyncTrigger_() {
   // Delete existing triggers if any
   deleteAutoSyncTrigger_();
 
-  // Determine interval based on configuration
-  const intervalMinutes = CONFIG.AUTO_SYNC_INTERVAL_MINUTES || 15;
+  // Create new trigger - auto-sync runs every 30 minutes
+  ScriptApp.newTrigger('autoSyncCustomerMappings')
+    .timeBased()
+    .everyMinutes(30)
+    .create();
 
-  // Create new trigger
-  const triggerBuilder = ScriptApp.newTrigger('autoSyncCustomerMappings')
-    .timeBased();
-
-  // Google Apps Script supports everyMinutes(1-15) and everyHours(1-12)
-  if (intervalMinutes <= 15) {
-    triggerBuilder.everyMinutes(intervalMinutes);
-  } else {
-    // Convert to hours (round up to ensure minimum interval is met)
-    const hours = Math.ceil(intervalMinutes / 60);
-    if (hours > 12) {
-      throw new Error("AUTO_SYNC_INTERVAL_MINUTES cannot exceed 720 minutes (12 hours)");
-    }
-    triggerBuilder.everyHours(hours);
-  }
-
-  triggerBuilder.create();
-
-  Logger.log(`Auto-sync trigger created (runs every ${intervalMinutes} minutes)`);
+  Logger.log("Auto-sync trigger created (runs every 30 minutes)");
 }
 
 /**
@@ -956,6 +938,12 @@ function autoSyncCustomerMappings() {
   Logger.log("Running auto-sync at " + new Date().toISOString());
 
   try {
+    // Safety check: verify Customer-Centric model is still enabled
+    if (!CONFIG.IS_ON_CUSTOMER_INBOX_MODEL) {
+      Logger.log("Auto-sync skipped: Customer-Centric model is not enabled");
+      deleteAutoSyncTrigger_();
+      return;
+    }
     // Fetch current state from ClearFeed
     const collections = fetchCollections();
     const customers = fetchAllCustomers();
@@ -1314,7 +1302,7 @@ function fetchAllCustomers() {
   let pageCount = 0;
 
   do {
-    const url = `${BASE_URL}/customers?limit=${PAGE_SIZE}${nextCursor ? '&next_cursor=' + nextCursor : ''}`;
+    const url = `${BASE_URL}/customers?limit=${PAGE_SIZE}${nextCursor ? '&next_cursor=' + encodeURIComponent(nextCursor) : ''}`;
 
     const response = UrlFetchApp.fetch(url, {
       method: 'GET',
