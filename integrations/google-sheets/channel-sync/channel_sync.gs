@@ -431,13 +431,10 @@ function populateInitialMappings() {
       const successMsg = `✅ Successfully populated sheet with ${sheetData.length} customer-channel mappings.\n\n` +
         `The sheet has been populated with the following format:\n` +
         `Collection | Customer | Channel Name | Channel ID\n\n` +
-        `Auto-sync will now run every 30 minutes to keep the sheet in sync with changes made via the webapp.`;
+        `To enable auto-sync, click "Setup Auto-Sync" from the menu. This will sync changes made via the webapp to the sheet every 24 hours.`;
 
       safeAlert("Population Complete", successMsg);
       Logger.log(`Successfully populated sheet with ${sheetData.length} mappings`);
-
-      // Setup auto-sync trigger
-      setupAutoSyncTrigger_();
 
     } else {
       safeAlert("No Data Found", "No customers with channels found in your ClearFeed account.");
@@ -464,11 +461,11 @@ function syncCustomerCentricChanges() {
     // Validate configuration
     if (!CONFIG.API_KEY || CONFIG.API_KEY === "") {
       safeAlert("Configuration Error", "Please update CONFIG.API_KEY with your ClearFeed API key.");
-      sendRunEmail_({
+      sendCustomerCentricSyncEmail_({
         startedAt: runStartedAt,
         completedAt: new Date(),
-        addedChannels: [],
-        removedChannels: [],
+        movedCustomers: [],
+        deletedChannels: [],
         failures: ["Configuration Error: CONFIG.API_KEY is missing or empty."]
       });
       return;
@@ -478,11 +475,11 @@ function syncCustomerCentricChanges() {
     const sheetData = readCustomerCentricSheetData();
     if (sheetData.length === 0) {
       safeAlert("No Data", "No customer-channel mappings found in the sheet.");
-      sendRunEmail_({
+      sendCustomerCentricSyncEmail_({
         startedAt: runStartedAt,
         completedAt: new Date(),
-        addedChannels: [],
-        removedChannels: [],
+        movedCustomers: [],
+        deletedChannels: [],
         failures: ["No Data: No customer-channel mappings found in the sheet."]
       });
       return;
@@ -527,21 +524,21 @@ function syncCustomerCentricChanges() {
       Logger.log("Customer-centric sync completed");
 
       // Send completion email
-      sendRunEmail_({
+      sendCustomerCentricSyncEmail_({
         startedAt: runStartedAt,
         completedAt: new Date(),
-        addedChannels: [],
-        removedChannels: [],
+        movedCustomers: results.movedCustomers || [],
+        deletedChannels: results.deletedChannels || [],
         failures: (results.failures || [])
       });
     } else {
       Logger.log("Sync cancelled by user");
       // Send cancellation email
-      sendRunEmail_({
+      sendCustomerCentricSyncEmail_({
         startedAt: runStartedAt,
         completedAt: new Date(),
-        addedChannels: [],
-        removedChannels: [],
+        movedCustomers: [],
+        deletedChannels: [],
         failures: ["Sync cancelled by user."]
       });
     }
@@ -551,11 +548,11 @@ function syncCustomerCentricChanges() {
     safeAlert("Sync Error", `An error occurred: ${error.toString()}`);
 
     // Send failure email
-    sendRunEmail_({
+    sendCustomerCentricSyncEmail_({
       startedAt: runStartedAt,
       completedAt: new Date(),
-      addedChannels: [],
-      removedChannels: [],
+      movedCustomers: [],
+      deletedChannels: [],
       failures: [`Sync Error: ${error.toString()}`]
     });
   }
@@ -832,6 +829,8 @@ function executeCustomerCentricPlan(plan) {
     deleteSuccess: 0,
     deleteFailed: 0,
     deleteSkipped: 0,
+    movedCustomers: [],
+    deletedChannels: [],
     failures: []
   };
 
@@ -841,16 +840,21 @@ function executeCustomerCentricPlan(plan) {
       const result = moveCustomer(item.customer_id, item.to_collection_id, item.version);
       if (result.success) {
         results.moveSuccess++;
+        results.movedCustomers.push({
+          customer_name: item.customer_name,
+          from_collection: item.from_collection,
+          to_collection: item.to_collection
+        });
         Logger.log(`✅ Moved customer ${item.customer_name} to ${item.to_collection}`);
       } else {
         results.moveFailed++;
-        Logger.log(`❌ Failed to move customer ${item.customer_name}: ${result.error}`);
         results.failures.push(`Move failed: ${item.customer_name}. ${result.error}`);
+        Logger.log(`❌ Failed to move customer ${item.customer_name}: ${result.error}`);
       }
     } catch (error) {
       results.moveFailed++;
-      Logger.log(`❌ Error moving customer ${item.customer_name}: ${error.toString()}`);
       results.failures.push(`Move error: ${item.customer_name}. ${error.toString()}`);
+      Logger.log(`❌ Error moving customer ${item.customer_name}: ${error.toString()}`);
     }
   }
 
@@ -866,16 +870,22 @@ function executeCustomerCentricPlan(plan) {
       const result = deleteChannel(item.channel_id);
       if (result.success) {
         results.deleteSuccess++;
+        results.deletedChannels.push({
+          channel_id: item.channel_id,
+          channel_name: item.channel_name,
+          customer_name: item.customer_name,
+          collection_name: item.collection_name
+        });
         Logger.log(`✅ Deleted channel ${item.channel_name} (${item.channel_id})`);
       } else {
         results.deleteFailed++;
-        Logger.log(`❌ Failed to delete channel ${item.channel_name}: ${result.error}`);
         results.failures.push(`Delete failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
+        Logger.log(`❌ Failed to delete channel ${item.channel_name}: ${result.error}`);
       }
     } catch (error) {
       results.deleteFailed++;
-      Logger.log(`❌ Error deleting channel ${item.channel_name}: ${error.toString()}`);
       results.failures.push(`Delete error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
+      Logger.log(`❌ Error deleting channel ${item.channel_name}: ${error.toString()}`);
     }
   }
 
@@ -930,7 +940,7 @@ function formatCustomerCentricResultMessage(results) {
  */
 function setupAutoSyncTrigger() {
   setupAutoSyncTrigger_();
-  safeAlert("Auto-Sync Enabled", "The sheet will now sync with ClearFeed every 30 minutes.\n\nChanges made via the webapp will be automatically reflected in the sheet.");
+  safeAlert("Auto-Sync Enabled", "The sheet will now sync with ClearFeed every 24 hours.\n\nChanges made via the webapp will be automatically reflected in the sheet.");
 }
 
 /**
@@ -940,13 +950,13 @@ function setupAutoSyncTrigger_() {
   // Delete existing triggers if any
   deleteAutoSyncTrigger_();
 
-  // Create new trigger - auto-sync runs every 30 minutes
+  // Create new trigger - auto-sync runs every 24 hours
   ScriptApp.newTrigger('autoSyncCustomerMappings')
     .timeBased()
-    .everyMinutes(30)
+    .everyHours(24)
     .create();
 
-  Logger.log("Auto-sync trigger created (runs every 30 minutes)");
+  Logger.log("Auto-sync trigger created (runs every 24 hours)");
 }
 
 /**
@@ -972,7 +982,7 @@ function deleteAutoSyncTrigger_() {
 }
 
 /**
- * Auto-sync function (triggered every 30 minutes)
+ * Auto-sync function (triggered every 24 hours)
  * Syncs changes from ClearFeed to the sheet
  */
 function autoSyncCustomerMappings() {
@@ -1005,13 +1015,14 @@ function autoSyncCustomerMappings() {
     for (const customer of customers) {
       const channelIds = customer.channel_ids || [];
 
-      // Skip customers with no channels or multiple channels
+      // Skip customers with no channels
       if (channelIds.length === 0) {
         continue;
       } else if (channelIds.length > 1) {
         multiChannelCustomers.push({
           name: customer.name,
-          channelCount: channelIds.length
+          channelCount: channelIds.length,
+          channels: channelIds.join(', ')
         });
         continue;
       }
@@ -1027,16 +1038,59 @@ function autoSyncCustomerMappings() {
       });
     }
 
-    // Clear and repopulate sheet
+    // Validation: Check if there are customers with multiple channels
+    if (multiChannelCustomers.length > 0) {
+      const errorMsg = "VALIDATION ERROR: The following customers have MORE THAN 1 channel associated with them.\n\n" +
+        "The auto-sync cannot proceed. This script only supports customer objects with exactly 1 channel.\n\n" +
+        "Customers with multiple channels:\n" +
+        multiChannelCustomers.map(c => `- ${c.name} (${c.channelCount} channels: ${c.channels})`).join('\n') +
+        "\n\nPlease resolve this in the ClearFeed webapp and then run 'Populate Initial Mappings' manually from the menu.";
+
+      Logger.log("Auto-sync validation failed: customers with multiple channels found");
+      sendAutoSyncValidationEmail_(multiChannelCustomers);
+      deleteAutoSyncTrigger_();
+      return;
+    }
+
+    // Update sheet while preserving manual Collection edits
     const sheet = getSheet();
     const lastRow = sheet.getLastRow();
 
+    // Build map of existing sheet data by channel ID (normalized)
+    const existingDataByChannelId = {};
+    if (lastRow > 1) {
+      const data = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
+      for (let i = 0; i < data.length; i++) {
+        let channelId = String(data[i][3] || '').trim();
+        if (channelId.startsWith('#')) {
+          channelId = channelId.substring(1);
+        }
+        // Store the manually edited Collection value
+        existingDataByChannelId[channelId] = {
+          collection: String(data[i][0] || '').trim(),
+          customer: String(data[i][1] || '').trim(),
+          channel_name: String(data[i][2] || '').trim(),
+          rowIndex: i + 2
+        };
+      }
+    }
+
+    // Clear and repopulate sheet, preserving manually edited Collection values
     if (lastRow > 1) {
       sheet.getRange(2, 1, lastRow - 1, 4).clearContent();
     }
 
     if (currentMappings.length > 0) {
-      const values = currentMappings.map(row => [row.collection, row.customer, row.channel_name, row.channel_id]);
+      const values = currentMappings.map(row => {
+        // Check if this channel was in the sheet before and had a manually edited Collection
+        const existing = existingDataByChannelId[row.channel_id];
+        if (existing && existing.collection !== row.collection) {
+          // Collection was manually edited - preserve it
+          Logger.log(`Preserving manual Collection edit for ${row.customer}: "${existing.collection}" (keeping manual value instead of API value "${row.collection}")`);
+          return [existing.collection, row.customer, row.channel_name, row.channel_id];
+        }
+        return [row.collection, row.customer, row.channel_name, row.channel_id];
+      });
       sheet.getRange(2, 1, currentMappings.length, 4).setValues(values);
       Logger.log(`Auto-sync updated sheet with ${currentMappings.length} mappings`);
     }
@@ -1868,7 +1922,7 @@ function isInteractiveMode() {
  * Format run timestamp for email subject
  */
 function formatRunTimestamp_() {
-  const tz = Session.getScriptTimeZone ? Session.getScriptTimeZone : 'GMT';
+  const tz = Session.getScriptTimeZone ? Session.getScriptTimeZone() : 'GMT';
   // HH:MM:SS DD MMM YYYY
   return Utilities.formatDate(new Date(), tz, 'HH:mm:ss dd MMM yyyy');
 }
@@ -1942,3 +1996,128 @@ function sendRunEmail_(runData) {
     }
   }
 }
+
+/**
+ * Send Customer-Centric sync email (separate from legacy model email)
+ * Includes moved customers and deleted channels
+ */
+function sendCustomerCentricSyncEmail_(runData) {
+  // Skip sending email if TO is not configured
+  if (!EMAIL_CONFIG.TO || EMAIL_CONFIG.TO === "") {
+    Logger.log("Email sending disabled: EMAIL_CONFIG.TO is empty");
+    return;
+  }
+
+  const timestamp = formatRunTimestamp_();
+  const subject = `${EMAIL_CONFIG.SUBJECT_PREFIX}[${timestamp}] - Customer Sync`;
+
+  const bodyLines = [];
+  bodyLines.push('Customer-Centric Sync completed:');
+  bodyLines.push('');
+
+  // Customers moved
+  bodyLines.push('Customers Moved:');
+  if (runData.movedCustomers && runData.movedCustomers.length > 0) {
+    for (const cust of runData.movedCustomers) {
+      bodyLines.push(`- ${cust.customer_name} FROM ${cust.from_collection} → ${cust.to_collection}`);
+    }
+  } else {
+    bodyLines.push('None');
+  }
+  bodyLines.push('');
+
+  // Channels deleted
+  bodyLines.push('Channels Deleted:');
+  if (runData.deletedChannels && runData.deletedChannels.length > 0) {
+    for (const ch of runData.deletedChannels) {
+      bodyLines.push(`- ${ch.channel_name} (${ch.channel_id}) from ${ch.collection_name}`);
+      bodyLines.push(`  Customer: ${ch.customer_name}`);
+    }
+  } else {
+    bodyLines.push('None');
+  }
+  bodyLines.push('');
+
+  // Failures
+  bodyLines.push('Failures:');
+  bodyLines.push(formatFailures_(runData.failures));
+
+  const body = bodyLines.join('\n');
+
+  // Attempt to send with explicit FROM first (works if alias is configured)
+  try {
+    GmailApp.sendEmail(EMAIL_CONFIG.TO, subject, body, {
+      from: EMAIL_CONFIG.FROM,
+      name: EMAIL_CONFIG.SENDER_NAME,
+      replyTo: EMAIL_CONFIG.FROM
+    });
+  } catch (e) {
+    // Fallback if alias/from is not permitted in this environment
+    try {
+      MailApp.sendEmail(EMAIL_CONFIG.TO, subject, body, {
+        name: EMAIL_CONFIG.SENDER_NAME,
+        replyTo: EMAIL_CONFIG.FROM
+      });
+    } catch (e2) {
+      Logger.log(`Failed to send Customer-Centric sync email: ${e2.toString()}`);
+    }
+  }
+}
+
+/**
+ * Send auto-sync validation error email
+ * Called when auto-sync detects multi-channel customers and halts
+ */
+function sendAutoSyncValidationEmail_(multiChannelCustomers) {
+  // Skip sending email if TO is not configured
+  if (!EMAIL_CONFIG.TO || EMAIL_CONFIG.TO === "") {
+    Logger.log("Email sending disabled: EMAIL_CONFIG.TO is empty");
+    return;
+  }
+
+  const timestamp = formatRunTimestamp_();
+  const subject = `${EMAIL_CONFIG.SUBJECT_PREFIX}[${timestamp}] - Auto-Sync Validation Error`;
+
+  const bodyLines = [];
+  bodyLines.push('AUTO-SYNC HALTED - VALIDATION ERROR');
+  bodyLines.push('');
+  bodyLines.push('The auto-sync has been disabled due to the following validation error:');
+  bodyLines.push('');
+  bodyLines.push('The following customers have MORE THAN 1 channel associated with them:');
+  bodyLines.push('');
+  for (const cust of multiChannelCustomers) {
+    bodyLines.push(`- ${cust.name} (${cust.channelCount} channels: ${cust.channels})`);
+  }
+  bodyLines.push('');
+  bodyLines.push('This script only supports customer objects with exactly 1 channel.');
+  bodyLines.push('');
+  bodyLines.push('ACTION REQUIRED:');
+  bodyLines.push('1. Resolve this in the ClearFeed webapp by organizing the structure');
+  bodyLines.push('2. Ensure each customer has only 1 channel');
+  bodyLines.push('3. Run "Populate Initial Mappings" manually from the menu');
+  bodyLines.push('4. Re-enable auto-sync by clicking "Setup Auto-Sync" from the menu');
+  bodyLines.push('');
+  bodyLines.push('Auto-sync has been automatically disabled to prevent data loss.');
+
+  const body = bodyLines.join('\n');
+
+  // Attempt to send with explicit FROM first (works if alias is configured)
+  try {
+    GmailApp.sendEmail(EMAIL_CONFIG.TO, subject, body, {
+      from: EMAIL_CONFIG.FROM,
+      name: EMAIL_CONFIG.SENDER_NAME,
+      replyTo: EMAIL_CONFIG.FROM
+    });
+  } catch (e) {
+    // Fallback if alias/from is not permitted in this environment
+    try {
+      MailApp.sendEmail(EMAIL_CONFIG.TO, subject, body, {
+        name: EMAIL_CONFIG.SENDER_NAME,
+        replyTo: EMAIL_CONFIG.FROM
+      });
+    } catch (e2) {
+      Logger.log(`Failed to send auto-sync validation email: ${e2.toString()}`);
+    }
+  }
+}
+
