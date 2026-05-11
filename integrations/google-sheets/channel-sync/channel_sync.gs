@@ -539,6 +539,7 @@ function readCustomerCentricSheetData() {
 
   const data = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
   const mappings = [];
+  const seenChannelIds = {};
 
   for (let i = 0; i < data.length; i++) {
     const row = data[i];
@@ -552,11 +553,17 @@ function readCustomerCentricSheetData() {
       continue;
     }
 
+    const trimmedChannelId = String(channelId).trim();
+    if (seenChannelIds[trimmedChannelId]) {
+      Logger.log(`Warning: Channel ID "${trimmedChannelId}" appears multiple times in the sheet. Using the latest occurrence.`);
+    }
+    seenChannelIds[trimmedChannelId] = i + 2;
+
     mappings.push({
       collection_name: String(collectionName).trim(),
       customer_name: String(customerName).trim(),
       channel_name: channelName ? String(channelName).trim() : '',
-      channel_id: String(channelId).trim(),
+      channel_id: trimmedChannelId,
       _normalized_collection: normalizeCollectionName(collectionName),
       _normalized_customer: normalizeCollectionName(customerName)
     });
@@ -574,17 +581,19 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
   const collectionNameToId = {};
   const collectionIdToName = {};
   const channelIdToName = {};
+  const channelIdToStatus = {};
 
   for (const col of collections) {
     const normalizedName = normalizeCollectionName(col.name);
     collectionNameToId[normalizedName] = col.id;
     collectionIdToName[col.id] = col.name;
 
-    // Track channel names from API
+    // Track channel names and status from API
     for (const ch of (col.channels || [])) {
       if (ch.name) {
         channelIdToName[ch.id] = ch.name;
       }
+      channelIdToStatus[ch.id] = ch.status;
     }
   }
 
@@ -687,16 +696,7 @@ function generateCustomerCentricPlan(sheetData, collections, customers) {
       }
 
       // Check if channel is still active
-      let isChannelActive = false;
-      for (const col of collections) {
-        for (const ch of (col.channels || [])) {
-          if (ch.id === channelId && ch.status !== 'inactive') {
-            isChannelActive = true;
-            break;
-          }
-        }
-        if (isChannelActive) break;
-      }
+      const isChannelActive = channelIdToStatus[channelId] && channelIdToStatus[channelId] !== 'inactive';
 
       if (!isChannelActive) {
         continue;
@@ -931,7 +931,7 @@ function deleteAutoSyncTrigger_() {
 }
 
 /**
- * Auto-sync function (triggered every 1 hour)
+ * Auto-sync function (triggered every 30 minutes)
  * Syncs changes from ClearFeed to the sheet
  */
 function autoSyncCustomerMappings() {
@@ -951,10 +951,14 @@ function autoSyncCustomerMappings() {
     // Build current state mappings
     const currentMappings = [];
     const collectionIdToName = {};
+    const channelIdToName = {};
     const multiChannelCustomers = [];
 
     for (const col of collections) {
       collectionIdToName[col.id] = col.name;
+      for (const ch of (col.channels || [])) {
+        channelIdToName[ch.id] = ch.name || ch.id;
+      }
     }
 
     for (const customer of customers) {
@@ -972,16 +976,7 @@ function autoSyncCustomerMappings() {
       }
 
       const channelId = channelIds[0];
-      let channelName = channelId;
-
-      for (const col of collections) {
-        for (const ch of (col.channels || [])) {
-          if (ch.id === channelId) {
-            channelName = ch.name || channelId;
-            break;
-          }
-        }
-      }
+      const channelName = channelIdToName[channelId] || channelId;
 
       currentMappings.push({
         collection: collectionIdToName[customer.collection_id] || "Unknown",
