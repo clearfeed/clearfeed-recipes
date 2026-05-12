@@ -7,11 +7,26 @@ const CONFIG = {
   SHEET_NAME: "Channel Mappings", // Name of the sheet tab containing the mappings
   INCLUDE_DELETES: false, // Whether to actually delete channels (default: false for safety)
   SPREADSHEET_ID: "", // Leave empty to use current spreadsheet, or specify ID
-  SET_OWNER: false, // Whether to set the owner field when adding channels (OLD MODEL ONLY)
+  SET_OWNER: null, // Whether to set the owner field when adding channels. Default: auto (true for legacy, false for customer-centric)
   IS_ON_CUSTOMER_INBOX_MODEL: true, // Set to true for Customer-Centric Inbox Model, false for legacy model
 };
 
 const BASE_URL = "https://api.clearfeed.app/v1/rest";
+
+/**
+ * Resolve effective SET_OWNER value.
+ * - If null/undefined: auto-derive (true for legacy, false for customer-centric)
+ * - If explicitly false in legacy mode: throw error (owner is required)
+ */
+function resolveSetOwner_() {
+  if (CONFIG.SET_OWNER === null || CONFIG.SET_OWNER === undefined || CONFIG.SET_OWNER === '') {
+    return !CONFIG.IS_ON_CUSTOMER_INBOX_MODEL;
+  }
+  if (!CONFIG.IS_ON_CUSTOMER_INBOX_MODEL && !CONFIG.SET_OWNER) {
+    throw new Error("CONFIG.SET_OWNER must be true in legacy mode (IS_ON_CUSTOMER_INBOX_MODEL = false). Owner is required when adding channels.");
+  }
+  return CONFIG.SET_OWNER;
+}
 
 // =============================================================================
 // Email Configuration
@@ -313,7 +328,6 @@ function readSheetData_() {
 
     if (isCustomerCentric) {
       mapping.customer_name = customerName ? String(customerName).trim() : '';
-      mapping._normalized_customer = customerName ? normalizeCollectionName(String(customerName).trim()) : '';
     }
 
     mappings.push(mapping);
@@ -719,6 +733,7 @@ function formatPlanMessage(plan) {
  * @param {Object} collectionOwners - collection_id -> owner (for SET_OWNER flag)
  */
 function executeAdds_(toAdd, results, collectionOwners) {
+  const setOwner = resolveSetOwner_();
   const addItemById = {};
   for (const item of toAdd) {
     addItemById[item.channel_id] = item;
@@ -733,11 +748,11 @@ function executeAdds_(toAdd, results, collectionOwners) {
     const channelObj = { id: item.channel_id };
     if (CONFIG.IS_ON_CUSTOMER_INBOX_MODEL) {
       const customerObj = { type: 'new' };
-      if (CONFIG.SET_OWNER) {
+      if (setOwner) {
         customerObj.owner = collectionOwners[item.collection_id] || null;
       }
       channelObj.customer = customerObj;
-    } else if (CONFIG.SET_OWNER) {
+    } else if (setOwner) {
       channelObj.owner = collectionOwners[item.collection_id] || '';
     }
     addsByCollection[item.collection_id].push(channelObj);
