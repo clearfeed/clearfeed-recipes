@@ -25,24 +25,24 @@ Before you begin, make sure you have:
 2. (Optional) Rename the sheet tab - if you have only one sheet, the script will use it automatically
 3. Add the following headers in the first row:
 
-| Collection | Slack channel (optional) | Channel ID |
-|------------|-------------------------|------------|
+| Collection | Channel Name | Channel ID |
+|------------|-------------|------------|
 | *(your data)* | *(your data)* | *(your data)* |
 
 4. Add your channel mapping data below the headers:
    - **Collection** (required): The name of the ClearFeed collection
-   - **Slack channel** (optional): The name of the Slack channel - if not provided, it will be fetched from ClearFeed API
+   - **Channel Name** (optional): The name of the Slack channel - if not provided, it will be fetched from ClearFeed API
    - **Channel ID** (required): The Slack channel ID (e.g., `C07AA9J9LJX`)
 
 Example data:
 
-| Collection | Slack channel (optional) | Channel ID |
-|------------|-------------------------|------------|
+| Collection | Channel Name | Channel ID |
+|------------|-------------|------------|
 | Support | #support-tickets | C07AA9J9LJX |
 | Engineering | | C06BB9H9HKW |
 | Sales | sales-questions | C05CC8G8GJV |
 
-**Note:** The "Slack channel" column is optional. Channel names are only used for display purposes in logs and messages. If not provided, the script will fetch channel names from ClearFeed API when available, or fall back to showing the channel ID.
+**Note:** The **Channel Name** column is optional. Channel names are only used for display purposes in logs and messages. If not provided, the script will fetch channel names from ClearFeed API when available, or fall back to showing the channel ID.
 
 ### Step 2: Open Apps Script Editor
 
@@ -128,13 +128,13 @@ Your sheet must have the following columns:
 | Column | Description | Required | Example |
 |--------|-------------|----------|---------|
 | Collection | ClearFeed collection name | Yes | Support |
-| Slack channel | Slack channel name (for display only) | No | #support-tickets |
+| Channel Name | Slack channel name (for display only) | No | #support-tickets |
 | Channel ID | Slack channel ID | Yes | C07AA9J9LJX |
 
 **Important:**
 - The first row must contain headers
 - Only **Collection** and **Channel ID** are required
-- The **Slack channel** column is optional - if not provided, channel names will be fetched from ClearFeed API automatically
+- The **Channel Name** column is optional - if not provided, channel names will be fetched from ClearFeed API automatically
 - Empty rows will be ignored
 - Collection names are case-insensitive
 
@@ -214,8 +214,8 @@ Fix this by correcting the collection name in your sheet.
 
 Adding multiple channels to ClearFeed collections for the first time:
 
-| Collection | Slack channel | Channel ID |
-|------------|---------------|------------|
+| Collection | Channel Name | Channel ID |
+|------------|-------------|------------|
 | Support | #support | C01AA0A0ATU |
 | Support | #billing | C02BB1B1BUV |
 | Engineering | #engineering | C03CC2C2CVW |
@@ -224,8 +224,8 @@ Adding multiple channels to ClearFeed collections for the first time:
 
 Moving channels between collections by updating the Collection column:
 
-| Collection | Slack channel | Channel ID |
-|------------|---------------|------------|
+| Collection | Channel Name | Channel ID |
+|------------|-------------|------------|
 | Support | #general-help | C04DD3D3DX0 |
 
 Running sync will move `#general-help` from its current collection to **Support**.
