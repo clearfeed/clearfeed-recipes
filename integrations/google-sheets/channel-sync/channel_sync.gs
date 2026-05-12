@@ -34,31 +34,17 @@ const EMAIL_CONFIG = {
  */
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
+  const populateFn = CONFIG.IS_ON_CUSTOMER_INBOX_MODEL ? 'populateInitialMappings' : 'populateCollectionChannels';
+  const syncFn = CONFIG.IS_ON_CUSTOMER_INBOX_MODEL ? 'syncCustomerCentricChanges' : 'syncChannels';
+  const testFn = CONFIG.IS_ON_CUSTOMER_INBOX_MODEL ? 'testCustomerConnection' : 'testClearfeedConnection';
 
-  if (CONFIG.IS_ON_CUSTOMER_INBOX_MODEL) {
-    // Customer-Centric Inbox Model menu
-    const menu = ui.createMenu('Customers Sync')
-      .addItem('📥 Populate Initial Mappings', 'populateInitialMappings')
-      .addItem('🔄 Sync Customer Changes', 'syncCustomerCentricChanges')
-      .addSeparator()
-      .addItem('⏰ Setup Auto-Sync', 'setupAutoSyncTrigger')
-      .addItem('🛑 Stop Auto-Sync', 'deleteAutoSyncTrigger')
-      .addSeparator()
-      .addItem('🧪 Test Connection', 'testCustomerConnection')
-      .addItem('📋 View Logs', 'showLogs');
-
-    menu.addToUi();
-  } else {
-    // Legacy Collection-Channel Model menu
-    const menu = ui.createMenu('ClearFeed Channel Sync')
-      .addItem('📥 Populate Initial Mappings', 'populateCollectionChannels')
-      .addItem('🔄 Sync Channels', 'syncChannels')
-      .addSeparator()
-      .addItem('🧪 Test Connection', 'testClearfeedConnection')
-      .addItem('📋 View Logs', 'showLogs');
-
-    menu.addToUi();
-  }
+  ui.createMenu('ClearFeed Channel Sync')
+    .addItem('📥 Populate Initial Mappings', populateFn)
+    .addItem('🔄 Sync Channels', syncFn)
+    .addSeparator()
+    .addItem('🧪 Test Connection', testFn)
+    .addItem('📋 View Logs', 'showLogs')
+    .addToUi();
 }
 
 // =============================================================================
@@ -110,7 +96,7 @@ function syncChannels() {
     }
 
     // Read data from the sheet
-    const sheetData = readSheetData();
+    const sheetData = readSheetData_();
     if (sheetData.length === 0) {
       safeAlert("No Data", "No channel mappings found in the sheet. Please check the sheet format.");
       sendRunEmail_({
@@ -277,58 +263,60 @@ function validateSheetHeaders(headers, isCustomerCentric) {
  * Expects format: Collection | Slack channel (optional) | Channel ID
  * Skips the header row (row 1)
  */
-function readSheetData() {
+function readSheetData_() {
+  const isCustomerCentric = CONFIG.IS_ON_CUSTOMER_INBOX_MODEL;
+  const numCols = isCustomerCentric ? 4 : 3;
   const sheet = getSheet();
   const lastRow = sheet.getLastRow();
 
   if (lastRow < 2) {
-    // No data (header only or empty)
     return [];
   }
 
-  const data = sheet.getRange(2, 1, lastRow - 1, 3).getValues();
+  const data = sheet.getRange(2, 1, lastRow - 1, numCols).getValues();
   const mappings = [];
-  const seenChannelIds = {}; // Track duplicates: channel_id -> row number
+  const seenChannelIds = {};
 
   for (let i = 0; i < data.length; i++) {
     const row = data[i];
     const collectionName = row[0];
-    const channelName = row[1];
-    const channelId = row[2];
+    // Customer-centric: [Collection, Customer, Channel Name, Channel ID]
+    // Legacy: [Collection, Channel Name, Channel ID]
+    const customerName = isCustomerCentric ? row[1] : null;
+    const channelName = isCustomerCentric ? row[2] : row[1];
+    const channelId = isCustomerCentric ? row[3] : row[2];
 
-    // Skip rows with missing required data (collection and channel ID)
-    if (!collectionName || !channelId) {
-      continue;
-    }
+    // Skip rows with missing required data
+    if (!collectionName || !channelId) continue;
 
-    // Trim whitespace
-    const trimmedCollection = String(collectionName).trim();
-    // channelName is now optional - if empty, will be filled from API later
-    const trimmedChannelName = channelName ? String(channelName).trim() : '';
     let trimmedChannelId = String(channelId).trim();
-    // Remove leading # from channel ID if present
     if (trimmedChannelId.startsWith('#')) {
       trimmedChannelId = trimmedChannelId.substring(1);
     }
 
-    // Basic validation for channel ID format
     if (!trimmedChannelId || trimmedChannelId.length < 2) {
       Logger.log(`Warning: Invalid channel ID "${trimmedChannelId}" in row ${i + 2}, skipping`);
       continue;
     }
 
-    // Check for duplicate channel IDs
     if (seenChannelIds[trimmedChannelId]) {
       Logger.log(`Warning: Channel ID "${trimmedChannelId}" appears multiple times in the sheet. Row ${seenChannelIds[trimmedChannelId]} and row ${i + 2}. Using the latest occurrence (row ${i + 2}).`);
     }
-    seenChannelIds[trimmedChannelId] = i + 2; // Store row number (1-based)
+    seenChannelIds[trimmedChannelId] = i + 2;
 
-    mappings.push({
-      collection_name: trimmedCollection,
-      channel_name: trimmedChannelName,
+    const mapping = {
+      collection_name: String(collectionName).trim(),
+      channel_name: channelName ? String(channelName).trim() : '',
       channel_id: trimmedChannelId,
-      _normalized_collection: normalizeCollectionName(trimmedCollection)
-    });
+      _normalized_collection: normalizeCollectionName(String(collectionName).trim())
+    };
+
+    if (isCustomerCentric) {
+      mapping.customer_name = customerName ? String(customerName).trim() : '';
+      mapping._normalized_customer = customerName ? normalizeCollectionName(String(customerName).trim()) : '';
+    }
+
+    mappings.push(mapping);
   }
 
   return mappings;
@@ -1061,6 +1049,14 @@ function populateCollectionChannels() {
       return;
     }
 
+    const sheet = getSheet();
+    const lastRow = sheet.getLastRow();
+
+    if (lastRow > 1) {
+      safeAlert("Existing Data Found", "The sheet already contains data. Please clear the existing data before populating initial mappings.");
+      return;
+    }
+
     const collections = fetchCollections();
     Logger.log(`Fetched ${collections.length} collections from ClearFeed`);
 
@@ -1082,14 +1078,6 @@ function populateCollectionChannels() {
         });
         totalChannels++;
       }
-    }
-
-    const sheet = getSheet();
-    const lastRow = sheet.getLastRow();
-
-    if (lastRow > 1) {
-      safeAlert("Existing Data Found", "The sheet already contains data. Please clear the existing data before populating initial mappings.");
-      return;
     }
 
     sheet.getRange(1, 1, 1, 3).setValues([["Collection", "Channel Name", "Channel ID"]]);
@@ -1135,6 +1123,14 @@ function populateInitialMappings() {
 
     if (!CONFIG.API_KEY || CONFIG.API_KEY === "") {
       safeAlert("Configuration Error", "Please update CONFIG.API_KEY with your ClearFeed API key.");
+      return;
+    }
+
+    const sheet = getSheet();
+    const lastRow = sheet.getLastRow();
+
+    if (lastRow > 1) {
+      safeAlert("Existing Data Found", "The sheet already contains data. Please clear the existing data before populating initial mappings.");
       return;
     }
 
@@ -1192,14 +1188,6 @@ function populateInitialMappings() {
 
       safeAlert("Validation Error", errorMsg);
       Logger.log("Validation failed: customers with multiple channels found");
-      return;
-    }
-
-    const sheet = getSheet();
-    const lastRow = sheet.getLastRow();
-
-    if (lastRow > 1) {
-      safeAlert("Existing Data Found", "The sheet already contains data. Please clear the existing data before populating initial mappings.");
       return;
     }
 
@@ -1271,7 +1259,7 @@ function syncCustomerCentricChanges() {
       return;
     }
 
-    const sheetData = readCustomerCentricSheetData();
+    const sheetData = readSheetData_();
     if (sheetData.length === 0) {
       safeAlert("No Data", "No customer-channel mappings found in the sheet.");
       sendCustomerCentricSyncEmail_({
@@ -1353,55 +1341,6 @@ function syncCustomerCentricChanges() {
 }
 
 /**
- * Read customer-centric sheet data
- * Expects format: Collection | Customer | Channel Name | Channel ID
- */
-function readCustomerCentricSheetData() {
-  const sheet = getSheet();
-  const lastRow = sheet.getLastRow();
-
-  if (lastRow < 2) {
-    return [];
-  }
-
-  const data = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
-  const mappings = [];
-  const seenChannelIds = {};
-
-  for (let i = 0; i < data.length; i++) {
-    const row = data[i];
-    const collectionName = row[0];
-    const customerName = row[1];
-    const channelName = row[2];
-    const channelId = row[3];
-
-    if (!collectionName || !customerName || !channelId) {
-      continue;
-    }
-
-    let trimmedChannelId = String(channelId).trim();
-    if (trimmedChannelId.startsWith('#')) {
-      trimmedChannelId = trimmedChannelId.substring(1);
-    }
-
-    if (seenChannelIds[trimmedChannelId]) {
-      Logger.log(`Warning: Channel ID "${trimmedChannelId}" appears multiple times in the sheet. Using the latest occurrence.`);
-    }
-    seenChannelIds[trimmedChannelId] = i + 2;
-
-    mappings.push({
-      collection_name: String(collectionName).trim(),
-      customer_name: String(customerName).trim(),
-      channel_name: channelName ? String(channelName).trim() : '',
-      channel_id: trimmedChannelId,
-      _normalized_collection: normalizeCollectionName(collectionName),
-      _normalized_customer: normalizeCollectionName(customerName)
-    });
-  }
-
-  return mappings;
-}
-
 // =============================================================================
 // Customer-Centric Inbox Model - Plan Generation
 // =============================================================================
