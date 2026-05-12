@@ -1320,7 +1320,7 @@ function syncCustomerCentricChanges() {
     }
 
     if (shouldExecute) {
-      const results = executeCustomerCentricPlan(planData.plan, customers);
+      const results = executeCustomerCentricPlan(planData.plan, customers, planData.collectionOwners);
       const resultMessage = formatCustomerCentricResultMessage(results);
       safeAlert("Sync Results", resultMessage);
       Logger.log("Customer-centric sync completed");
@@ -1373,7 +1373,7 @@ function syncCustomerCentricChanges() {
  * @param {Object} plan - Plan from generateActionPlan()
  * @param {Array} customers - Customers from fetchAllCustomers(), used to look up customer_id/version for moves
  */
-function executeCustomerCentricPlan(plan, customers) {
+function executeCustomerCentricPlan(plan, customers, collectionOwners) {
   const results = {
     addSuccess: 0,
     addFailed: 0,
@@ -1389,7 +1389,7 @@ function executeCustomerCentricPlan(plan, customers) {
   };
 
   // Execute adds and removes using shared helpers
-  executeAdds_(plan.toAdd, results, {});
+  executeAdds_(plan.toAdd, results, collectionOwners);
   executeRemoves_(plan.toRemove, results, !CONFIG.INCLUDE_DELETES);
 
   // Build channel_id → customer lookup for moves
