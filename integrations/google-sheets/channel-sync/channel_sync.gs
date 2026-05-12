@@ -722,11 +722,118 @@ function formatPlanMessage(plan) {
 }
 
 // =============================================================================
+// Shared Plan Execution Helpers (used by both legacy and customer-centric modes)
+// =============================================================================
+
+/**
+ * Execute add operations (grouped by collection for efficiency)
+ * @param {Array} toAdd - plan.toAdd from generateActionPlan()
+ * @param {Object} results - results object to mutate
+ * @param {Object} collectionOwners - collection_id -> owner (for SET_OWNER flag)
+ */
+function executeAdds_(toAdd, results, collectionOwners) {
+  const addItemById = {};
+  for (const item of toAdd) {
+    addItemById[item.channel_id] = item;
+  }
+
+  // Group adds by collection for efficiency
+  const addsByCollection = {};
+  for (const item of toAdd) {
+    if (!addsByCollection[item.collection_id]) {
+      addsByCollection[item.collection_id] = [];
+    }
+    const channelObj = { id: item.channel_id };
+    if (CONFIG.SET_OWNER) {
+      channelObj.owner = collectionOwners[item.collection_id] || '';
+    }
+    if (CONFIG.CREATE_EMPTY_CUSTOMER) {
+      channelObj.customer = { type: 'new' };
+    }
+    addsByCollection[item.collection_id].push(channelObj);
+  }
+
+  for (const [collectionId, channels] of Object.entries(addsByCollection)) {
+    try {
+      const result = addChannelsToCollection(collectionId, channels);
+      if (result.success) {
+        results.addSuccess += channels.length;
+        Logger.log(`✅ Added ${channels.length} channels to collection ${collectionId}`);
+        for (const ch of channels) {
+          const item = addItemById[ch.id];
+          results.addedChannels.push({
+            id: ch.id,
+            name: (item && item.channel_name) ? item.channel_name : ch.id,
+            collection: item ? item.collection_name : ''
+          });
+        }
+      } else {
+        results.addFailed += channels.length;
+        Logger.log(`❌ Failed to add channels to collection ${collectionId}: ${result.error}`);
+        const failedList = channels.map(function(ch) {
+          const item = addItemById[ch.id];
+          const nm = (item && item.channel_name) ? item.channel_name : ch.id;
+          return `${ch.id} - ${nm}`;
+        }).join(', ');
+        results.failures.push(`Add failed (collection ${collectionId}): ${result.error}. Channels: ${failedList}`);
+      }
+    } catch (error) {
+      results.addFailed += channels.length;
+      Logger.log(`❌ Error adding channels to collection ${collectionId}: ${error.toString()}`);
+      const failedList = channels.map(function(ch) {
+        const item = addItemById[ch.id];
+        const nm = (item && item.channel_name) ? item.channel_name : ch.id;
+        return `${ch.id} - ${nm}`;
+      }).join(', ');
+      results.failures.push(`Add error (collection ${collectionId}): ${error.toString()}. Channels: ${failedList}`);
+    }
+  }
+}
+
+/**
+ * Execute remove operations
+ * @param {Array} toRemove - plan.toRemove from generateActionPlan()
+ * @param {Object} results - results object to mutate
+ * @param {boolean} skipDeletes - if true, skip all delete operations
+ */
+function executeRemoves_(toRemove, results, skipDeletes) {
+  for (const item of toRemove) {
+    if (skipDeletes) {
+      results.removeSkipped++;
+      Logger.log(`⏭️ Skipped removal of channel ${item.channel_name} (${item.channel_id}) - deletes disabled`);
+      results.failures.push(`Remove skipped (deletes disabled): ${item.channel_id} - ${item.channel_name}`);
+      continue;
+    }
+
+    try {
+      const result = deleteChannel(item.channel_id);
+      if (result.success) {
+        results.removeSuccess++;
+        results.removedChannels.push({
+          id: item.channel_id,
+          name: item.channel_name || item.channel_id,
+          collection: item.collection_name || ''
+        });
+        Logger.log(`✅ Removed channel ${item.channel_name} (${item.channel_id})`);
+      } else {
+        results.removeFailed++;
+        Logger.log(`❌ Failed to remove channel ${item.channel_name} (${item.channel_id}): ${result.error}`);
+        results.failures.push(`Remove failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
+      }
+    } catch (error) {
+      results.removeFailed++;
+      Logger.log(`❌ Error removing channel ${item.channel_name} (${item.channel_id}): ${error.toString()}`);
+      results.failures.push(`Remove error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
+    }
+  }
+}
+
+// =============================================================================
 // Plan Execution Functions
 // =============================================================================
 
 /**
- * Execute the sync plan
+ * Execute the sync plan (legacy mode)
  */
 function executePlan(plan, skipDeletes, collectionOwners) {
   const results = {
@@ -743,78 +850,9 @@ function executePlan(plan, skipDeletes, collectionOwners) {
     failures: []
   };
 
-  // Build lookup maps for email details
-  const addItemById = {};
-  for (const item of plan.toAdd) {
-    addItemById[item.channel_id] = item;
-  }
-  const removeItemById = {};
-  for (const item of plan.toRemove) {
-    removeItemById[item.channel_id] = item;
-  }
-
-  // Group adds by collection for efficiency
-  const addsByCollection = {};
-  for (const item of plan.toAdd) {
-    if (!addsByCollection[item.collection_id]) {
-      addsByCollection[item.collection_id] = [];
-    }
-    const channelObj = {
-      id: item.channel_id
-    };
-    // Add owner if enabled
-    if (CONFIG.SET_OWNER) {
-      channelObj.owner = collectionOwners[item.collection_id] || '';
-    }
-    // Add empty customer object if enabled
-    if (CONFIG.CREATE_EMPTY_CUSTOMER) {
-      channelObj.customer = { type: 'new' };
-    }
-    addsByCollection[item.collection_id].push(channelObj);
-  }
-
-  // Execute adds (grouped by collection)
-  for (const [collectionId, channels] of Object.entries(addsByCollection)) {
-    try {
-      const result = addChannelsToCollection(collectionId, channels);
-      if (result.success) {
-        results.addSuccess += channels.length;
-        Logger.log(`✅ Added ${channels.length} channels to collection ${collectionId}`);
-
-        // Track for email
-        for (const ch of channels) {
-          const item = addItemById[ch.id];
-          results.addedChannels.push({
-            id: ch.id,
-            name: (item && item.channel_name) ? item.channel_name : ch.id,
-            collection: item ? item.collection_name : ''
-          });
-        }
-      } else {
-        results.addFailed += channels.length;
-        Logger.log(`❌ Failed to add channels to collection ${collectionId}: ${result.error}`);
-
-        // Track failure for email
-        const failedList = channels.map(function(ch) {
-          const item = addItemById[ch.id];
-          const nm = (item && item.channel_name) ? item.channel_name : ch.id;
-          return `${ch.id} - ${nm}`;
-        }).join(', ');
-        results.failures.push(`Add failed (collection ${collectionId}): ${result.error}. Channels: ${failedList}`);
-      }
-    } catch (error) {
-      results.addFailed += channels.length;
-      Logger.log(`❌ Error adding channels to collection ${collectionId}: ${error.toString()}`);
-
-      // Track failure for email
-      const failedList = channels.map(function(ch) {
-        const item = addItemById[ch.id];
-        const nm = (item && item.channel_name) ? item.channel_name : ch.id;
-        return `${ch.id} - ${nm}`;
-      }).join(', ');
-      results.failures.push(`Add error (collection ${collectionId}): ${error.toString()}. Channels: ${failedList}`);
-    }
-  }
+  // Execute adds and removes using shared helpers
+  executeAdds_(plan.toAdd, results, collectionOwners);
+  executeRemoves_(plan.toRemove, results, skipDeletes);
 
   // Execute moves (individual)
   for (const item of plan.toMove) {
@@ -826,55 +864,12 @@ function executePlan(plan, skipDeletes, collectionOwners) {
       } else {
         results.moveFailed++;
         Logger.log(`❌ Failed to move channel ${item.channel_name} (${item.channel_id}): ${result.error}`);
-
-        // Track failure for email
         results.failures.push(`Move failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
       }
     } catch (error) {
       results.moveFailed++;
       Logger.log(`❌ Error moving channel ${item.channel_name} (${item.channel_id}): ${error.toString()}`);
-
-      // Track failure for email
       results.failures.push(`Move error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
-    }
-  }
-
-  // Execute removes (individual)
-  for (const item of plan.toRemove) {
-    if (skipDeletes) {
-      results.removeSkipped++;
-      Logger.log(`⏭️ Skipped removal of channel ${item.channel_name} (${item.channel_id}) - deletes disabled`);
-
-      // Track skipped as informational for email
-      results.failures.push(`Remove skipped (deletes disabled): ${item.channel_id} - ${item.channel_name}`);
-      continue;
-    }
-
-    try {
-      const result = deleteChannel(item.channel_id);
-      if (result.success) {
-        results.removeSuccess++;
-        Logger.log(`✅ Removed channel ${item.channel_name} (${item.channel_id})`);
-
-        // Track for email
-        results.removedChannels.push({
-          id: item.channel_id,
-          name: item.channel_name || item.channel_id,
-          collection: item.collection_name || ''
-        });
-      } else {
-        results.removeFailed++;
-        Logger.log(`❌ Failed to remove channel ${item.channel_name} (${item.channel_id}): ${result.error}`);
-
-        // Track failure for email
-        results.failures.push(`Remove failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
-      }
-    } catch (error) {
-      results.removeFailed++;
-      Logger.log(`❌ Error removing channel ${item.channel_name} (${item.channel_id}): ${error.toString()}`);
-
-      // Track failure for email
-      results.failures.push(`Remove error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
     }
   }
 
@@ -1433,6 +1428,10 @@ function executeCustomerCentricPlan(plan, customers) {
     failures: []
   };
 
+  // Execute adds and removes using shared helpers
+  executeAdds_(plan.toAdd, results, {});
+  executeRemoves_(plan.toRemove, results, !CONFIG.INCLUDE_DELETES);
+
   // Build channel_id → customer lookup for moves
   const channelToCustomer = {};
   for (const customer of customers) {
@@ -1440,55 +1439,6 @@ function executeCustomerCentricPlan(plan, customers) {
       for (const channelId of customer.channel_ids) {
         channelToCustomer[channelId] = customer;
       }
-    }
-  }
-
-  // Group adds by collection for efficiency
-  const addsByCollection = {};
-  for (const item of plan.toAdd) {
-    if (!addsByCollection[item.collection_id]) {
-      addsByCollection[item.collection_id] = [];
-    }
-    addsByCollection[item.collection_id].push({ id: item.channel_id });
-  }
-
-  const addItemById = {};
-  for (const item of plan.toAdd) {
-    addItemById[item.channel_id] = item;
-  }
-
-  // Execute adds (grouped by collection)
-  for (const [collectionId, channels] of Object.entries(addsByCollection)) {
-    try {
-      const result = addChannelsToCollection(collectionId, channels);
-      if (result.success) {
-        results.addSuccess += channels.length;
-        Logger.log(`✅ Added ${channels.length} channels to collection ${collectionId}`);
-        for (const ch of channels) {
-          const item = addItemById[ch.id];
-          results.addedChannels.push({
-            id: ch.id,
-            name: (item && item.channel_name) ? item.channel_name : ch.id,
-            collection: item ? item.collection_name : ''
-          });
-        }
-      } else {
-        results.addFailed += channels.length;
-        Logger.log(`❌ Failed to add channels to collection ${collectionId}: ${result.error}`);
-        const failedList = channels.map(ch => {
-          const item = addItemById[ch.id];
-          return `${ch.id} - ${(item && item.channel_name) ? item.channel_name : ch.id}`;
-        }).join(', ');
-        results.failures.push(`Add failed (collection ${collectionId}): ${result.error}. Channels: ${failedList}`);
-      }
-    } catch (error) {
-      results.addFailed += channels.length;
-      Logger.log(`❌ Error adding channels to collection ${collectionId}: ${error.toString()}`);
-      const failedList = channels.map(ch => {
-        const item = addItemById[ch.id];
-        return `${ch.id} - ${(item && item.channel_name) ? item.channel_name : ch.id}`;
-      }).join(', ');
-      results.failures.push(`Add error (collection ${collectionId}): ${error.toString()}. Channels: ${failedList}`);
     }
   }
 
@@ -1521,36 +1471,6 @@ function executeCustomerCentricPlan(plan, customers) {
       results.moveFailed++;
       results.failures.push(`Move error: ${customer.name}. ${error.toString()}`);
       Logger.log(`❌ Error moving customer ${customer.name}: ${error.toString()}`);
-    }
-  }
-
-  // Execute removes
-  for (const item of plan.toRemove) {
-    if (!CONFIG.INCLUDE_DELETES) {
-      results.removeSkipped++;
-      Logger.log(`⏭️ Skipped removal of channel ${item.channel_name} (${item.channel_id}) - deletes disabled`);
-      continue;
-    }
-
-    try {
-      const result = deleteChannel(item.channel_id);
-      if (result.success) {
-        results.removeSuccess++;
-        results.removedChannels.push({
-          channel_id: item.channel_id,
-          channel_name: item.channel_name,
-          collection_name: item.collection_name
-        });
-        Logger.log(`✅ Removed channel ${item.channel_name} (${item.channel_id})`);
-      } else {
-        results.removeFailed++;
-        results.failures.push(`Remove failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
-        Logger.log(`❌ Failed to remove channel ${item.channel_name}: ${result.error}`);
-      }
-    } catch (error) {
-      results.removeFailed++;
-      results.failures.push(`Remove error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
-      Logger.log(`❌ Error removing channel ${item.channel_name}: ${error.toString()}`);
     }
   }
 
@@ -1933,7 +1853,7 @@ function sendCustomerCentricSyncEmail_(runData) {
   bodyLines.push('Channels Removed:');
   if (runData.removedChannels && runData.removedChannels.length > 0) {
     for (const ch of runData.removedChannels) {
-      bodyLines.push(`- ${ch.channel_name} (${ch.channel_id}) from ${ch.collection_name}`);
+      bodyLines.push(`- ${ch.name} (${ch.id}) from ${ch.collection}`);
     }
   } else {
     bodyLines.push('None');
