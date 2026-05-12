@@ -2,6 +2,10 @@
 
 A Google Apps Script that syncs collection-to-channel mappings from a Google Sheet to ClearFeed. This allows you to bulk manage which Slack channels belong to which ClearFeed collections.
 
+The script supports two operational modes:
+- **Legacy mode** (`IS_ON_CUSTOMER_INBOX_MODEL: false`) - Manages Collection-to-Channel mappings directly
+- **Customer-Centric Inbox mode** (`IS_ON_CUSTOMER_INBOX_MODEL: true`) - Manages Customer-to-Channel-to-Collection mappings, where each customer has exactly one channel
+
 ## Features
 
 - **Bulk channel management** - Add, move, or remove multiple channels at once
@@ -9,6 +13,8 @@ A Google Apps Script that syncs collection-to-channel mappings from a Google She
 - **Safe by default** - Channel deletion is disabled by default (must be explicitly enabled)
 - **Non-interactive mode support** - Works with Google Sheets triggers for automation
 - **Flexible configuration** - All settings managed in the sheet itself
+- **Populate initial mappings** - Fetch existing mappings from ClearFeed to seed the sheet
+- **Email notifications** - Optional email alerts on sync completion
 
 ## Prerequisites
 
@@ -23,26 +29,6 @@ Before you begin, make sure you have:
 
 1. Go to [sheets.google.com](https://sheets.google.com) and create a new sheet
 2. (Optional) Rename the sheet tab - if you have only one sheet, the script will use it automatically
-3. Add the following headers in the first row:
-
-| Collection | Channel Name | Channel ID |
-|------------|-------------|------------|
-| *(your data)* | *(your data)* | *(your data)* |
-
-4. Add your channel mapping data below the headers:
-   - **Collection** (required): The name of the ClearFeed collection
-   - **Channel Name** (optional): The name of the Slack channel - if not provided, it will be fetched from ClearFeed API
-   - **Channel ID** (required): The Slack channel ID (e.g., `C07AA9J9LJX`)
-
-Example data:
-
-| Collection | Channel Name | Channel ID |
-|------------|-------------|------------|
-| Support | #support-tickets | C07AA9J9LJX |
-| Engineering | | C06BB9H9HKW |
-| Sales | sales-questions | C05CC8G8GJV |
-
-**Note:** The **Channel Name** column is optional. Channel names are only used for display purposes in logs and messages. If not provided, the script will fetch channel names from ClearFeed API when available, or fall back to showing the channel ID.
 
 ### Step 2: Open Apps Script Editor
 
@@ -62,29 +48,38 @@ At the top of the script, update the `CONFIG` object:
 
 ```javascript
 const CONFIG = {
-  API_KEY: "", // Required: Replace with your ClearFeed API key
-  SHEET_NAME: "Channel Mappings", // Name of the sheet tab
-  INCLUDE_DELETES: false, // Whether to actually delete channels (default: false)
-  SPREADSHEET_ID: "", // Leave empty to use current spreadsheet
+  API_KEY: "",                          // Required: Replace with your ClearFeed API key
+  SHEET_NAME: "Channel Mappings",       // Name of the sheet tab
+  INCLUDE_DELETES: false,               // Whether to actually delete channels (default: false)
+  SPREADSHEET_ID: "",                   // Leave empty to use current spreadsheet
+  SET_OWNER: null,                      // Auto-derived: true for legacy, false for customer-centric
+  IS_ON_CUSTOMER_INBOX_MODEL: true,     // true for Customer-Centric Inbox, false for legacy
 };
 ```
 
 **Required:**
 - Set `API_KEY` to your ClearFeed API token
+- Set `IS_ON_CUSTOMER_INBOX_MODEL` to match your ClearFeed account setup
 
 **Optional:**
 - Change `SHEET_NAME` if your spreadsheet has multiple sheets (if there's only one sheet, it's used automatically)
 - Set `INCLUDE_DELETES` to `true` to enable channel deletion (use with caution!)
 - Set `SPREADSHEET_ID` to use a different spreadsheet
+- Set `SET_OWNER` explicitly to override the auto-derived default
 
-### Step 5: Test Connection
+### Step 5: Populate Initial Mappings
 
 1. Go back to your Google Sheet
 2. Refresh the page (a new menu should appear)
-3. Click **ClearFeed Channel Sync** > **Test Connection**
-4. You should see a success message with the number of collections found
+3. Click **ClearFeed Channel Sync** > **Populate Initial Mappings**
+4. The sheet will be populated with existing mappings from ClearFeed
 
-### Step 6: Run the Sync
+### Step 6: Test Connection
+
+1. Click **ClearFeed Channel Sync** > **Test Connection**
+2. You should see a success message with the number of collections found
+
+### Step 7: Run the Sync
 
 1. Click **ClearFeed Channel Sync** > **Sync Channels**
 2. Review the sync plan that shows what will be added, moved, or removed
@@ -95,6 +90,13 @@ const CONFIG = {
 ### API_KEY (Required)
 
 Your ClearFeed API token (see [Personal Access Token](https://docs.clearfeed.ai/clearfeed-help-center/account-setup/developer-settings#personal-access-token)).
+
+### IS_ON_CUSTOMER_INBOX_MODEL (Required)
+
+Determines which mode the script operates in.
+
+- **`true`** - Customer-Centric Inbox mode. Sheet format: Collection | Customer | Channel Name | Channel ID
+- **`false`** - Legacy mode. Sheet format: Collection | Channel Name | Channel ID
 
 ### SHEET_NAME
 
@@ -121,9 +123,19 @@ Use this to sync from a different spreadsheet than where the script is installed
 - **Default**: `""` (use the current spreadsheet)
 - **Example**: `"1BxiMvs0XRA5nFMdK..."` (found in the spreadsheet URL)
 
+### SET_OWNER
+
+Whether to set the owner field when adding channels.
+
+- **Default**: `null` (auto-derived: `true` for legacy mode, `false` for customer-centric mode)
+- In **legacy mode**: Owner is required and set on the channel object. Setting `false` explicitly will cause an error.
+- In **customer-centric mode**: If enabled, owner is set inside the customer object during creation.
+
 ## Sheet Format
 
-Your sheet must have the following columns:
+The sheet format depends on the operational mode.
+
+### Legacy Mode (IS_ON_CUSTOMER_INBOX_MODEL: false)
 
 | Column | Description | Required | Example |
 |--------|-------------|----------|---------|
@@ -131,10 +143,19 @@ Your sheet must have the following columns:
 | Channel Name | Slack channel name (for display only) | No | #support-tickets |
 | Channel ID | Slack channel ID | Yes | C07AA9J9LJX |
 
+### Customer-Centric Inbox Mode (IS_ON_CUSTOMER_INBOX_MODEL: true)
+
+| Column | Description | Required | Example |
+|--------|-------------|----------|---------|
+| Collection | ClearFeed collection name | Yes | Support |
+| Customer | Customer name | No | Acme Corp |
+| Channel Name | Slack channel name (for display only) | No | #support-tickets |
+| Channel ID | Slack channel ID | Yes | C07AA9J9LJX |
+
 **Important:**
 - The first row must contain headers
 - Only **Collection** and **Channel ID** are required
-- The **Channel Name** column is optional - if not provided, channel names will be fetched from ClearFeed API automatically
+- **Channel Name** and **Customer** are optional - used only for display
 - Empty rows will be ignored
 - Collection names are case-insensitive
 
@@ -158,9 +179,10 @@ The **ClearFeed Channel Sync** menu provides the following options:
 
 | Option | Description |
 |--------|-------------|
-| 🔄 Sync Channels | Reads the sheet, generates a plan, and syncs changes to ClearFeed |
-| 🧪 Test Connection | Validates your API token and shows collection count |
-| 📋 View Logs | Instructions for viewing detailed logs |
+| Populate Initial Mappings | Fetches existing mappings from ClearFeed and populates the sheet |
+| Sync Channels | Reads the sheet, generates a plan, and syncs changes to ClearFeed |
+| Test Connection | Validates your API token and shows collection count |
+| View Logs | Instructions for viewing detailed logs |
 
 ## Understanding the Sync Plan
 
@@ -170,18 +192,18 @@ When you run "Sync Channels", you'll see a plan like this:
 CHANNEL SYNC PLAN
 ==================
 
-📝 Channels to ADD: 2
+Channels to ADD: 2
    + #support-tickets (C07AA9J9LJX) → Support
    + #eng-help (C06BB9H9HKW) → Engineering
 
-🔄 Channels to MOVE: 1
+Channels to MOVE: 1
    ~ #sales-questions (C05CC8G8GJV)
      Support → Sales
 
-🗑️  Channels to REMOVE: 1
+Channels to REMOVE: 1
    - #old-channel (C04DD7F7FIU) from Support
 
-⚠️  WARNING: Deletes are SKIPPED (CONFIG.INCLUDE_DELETES = false)
+WARNING: Deletes are SKIPPED (CONFIG.INCLUDE_DELETES = false)
 
 SUMMARY:
   Add: 2
@@ -193,6 +215,8 @@ SUMMARY:
 
 - **Add**: The channel doesn't exist in ClearFeed and will be added
 - **Move**: The channel exists but is in a different collection; it will be moved
+  - Legacy mode: moves the channel directly
+  - Customer-centric mode: moves the customer (which owns the channel) to the new collection
 - **Remove**: The channel exists in ClearFeed but not in your sheet (see warning below)
 
 ### Collection Not Found Warning
@@ -200,7 +224,7 @@ SUMMARY:
 If a collection name in your sheet doesn't exist in ClearFeed:
 
 ```
-⚠️  Collections NOT FOUND in ClearFeed:
+Collections NOT FOUND in ClearFeed:
    - Unknown Collection
 
 Channels in these collections will be SKIPPED.
@@ -212,7 +236,7 @@ Fix this by correcting the collection name in your sheet.
 
 ### 1. Initial Setup
 
-Adding multiple channels to ClearFeed collections for the first time:
+First use the **Populate Initial Mappings** menu option to fetch existing mappings from ClearFeed. Then add new channels:
 
 | Collection | Channel Name | Channel ID |
 |------------|-------------|------------|
@@ -242,7 +266,7 @@ You can set up a time-based trigger to run the sync automatically:
 2. Click the clock icon (Triggers) in the left sidebar
 3. Click **+ Add Trigger**
 4. Configure:
-   - Function to run: `syncChannels`
+   - Function to run: `syncChannels` (legacy) or `syncCustomerCentricChanges` (customer-centric)
    - Event source: **Time-driven**
    - Type of time based trigger: **Hour timer** (or your preference)
    - Interval: **Every hour** (or your preference)
@@ -276,6 +300,10 @@ A: Invalid channel IDs are logged and skipped. Check the logs for details.
 
 A: This script is designed for Slack channel IDs. For Teams, you'd need to modify the channel ID format and API calls.
 
+### Q: What if my sheet already has data when I try to Populate Initial Mappings?
+
+A: The populate function will refuse to overwrite existing data. Clear the sheet data first, then run populate.
+
 ## Troubleshooting
 
 ### "Sheet 'Channel Mappings' not found"
@@ -290,7 +318,7 @@ A: This script is designed for Slack channel IDs. For Teams, you'd need to modif
 
 ### "No channel mappings found in the sheet"
 
-**Solution:** Ensure your sheet has at least one data row below the header row, and all three columns are filled.
+**Solution:** Ensure your sheet has at least one data row below the header row, and all required columns are filled.
 
 ### Sync doesn't execute when run from a trigger
 
@@ -300,14 +328,23 @@ A: This script is designed for Slack channel IDs. For Teams, you'd need to modif
 
 **Solution:** Verify the exact spelling of collection names in ClearFeed. The comparison is case-insensitive but must match otherwise.
 
+### "CONFIG.SET_OWNER must be true in legacy mode"
+
+**Solution:** In legacy mode, the owner field is required when adding channels. Either leave `SET_OWNER` as `null` (default) or set it explicitly to `true`.
+
 ## Data Structure
 
 The script uses the ClearFeed REST API:
 
 - **GET** `/collections?include=channels` - Fetch all collections with their channels
 - **POST** `/collections/{id}/channels` - Add channels to a collection
-- **PATCH** `/channels/{id}` - Move a channel to a different collection
+- **PATCH** `/channels/{id}` - Move a channel to a different collection (legacy mode)
 - **DELETE** `/channels/{id}` - Remove a channel
+
+Customer-Centric Inbox mode additionally uses:
+
+- **GET** `/customers` - Fetch all customers (with pagination)
+- **PATCH** `/customers/{id}` - Move a customer to a different collection
 
 For full API documentation, see [ClearFeed API Docs](https://docs.clearfeed.ai/api).
 
