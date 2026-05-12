@@ -7,7 +7,6 @@ const CONFIG = {
   SHEET_NAME: "Channel Mappings", // Name of the sheet tab containing the mappings
   INCLUDE_DELETES: false, // Whether to actually delete channels (default: false for safety)
   SPREADSHEET_ID: "", // Leave empty to use current spreadsheet, or specify ID
-  CREATE_EMPTY_CUSTOMER: false, // Whether to create an empty customer object when adding channels (OLD MODEL ONLY)
   SET_OWNER: false, // Whether to set the owner field when adding channels (OLD MODEL ONLY)
   IS_ON_CUSTOMER_INBOX_MODEL: true, // Set to true for Customer-Centric Inbox Model, false for legacy model
 };
@@ -744,11 +743,14 @@ function executeAdds_(toAdd, results, collectionOwners) {
       addsByCollection[item.collection_id] = [];
     }
     const channelObj = { id: item.channel_id };
-    if (CONFIG.SET_OWNER) {
+    if (CONFIG.IS_ON_CUSTOMER_INBOX_MODEL) {
+      const customerObj = { type: 'new' };
+      if (CONFIG.SET_OWNER) {
+        customerObj.owner = collectionOwners[item.collection_id] || null;
+      }
+      channelObj.customer = customerObj;
+    } else if (CONFIG.SET_OWNER) {
       channelObj.owner = collectionOwners[item.collection_id] || '';
-    }
-    if (CONFIG.CREATE_EMPTY_CUSTOMER) {
-      channelObj.customer = { type: 'new' };
     }
     addsByCollection[item.collection_id].push(channelObj);
   }
