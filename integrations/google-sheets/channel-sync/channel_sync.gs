@@ -838,6 +838,29 @@ function executeRemoves_(toRemove, results, skipDeletes) {
 // =============================================================================
 
 /**
+ * Execute legacy moves (individual moveChannel calls)
+ */
+function executeLegacyMoves_(toMove, results) {
+  for (const item of toMove) {
+    try {
+      const result = moveChannel(item.channel_id, item.to_collection_id);
+      if (result.success) {
+        results.moveSuccess++;
+        Logger.log(`✅ Moved channel ${item.channel_name} (${item.channel_id}) to ${item.to_collection}`);
+      } else {
+        results.moveFailed++;
+        Logger.log(`❌ Failed to move channel ${item.channel_name} (${item.channel_id}): ${result.error}`);
+        results.failures.push(`Move failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
+      }
+    } catch (error) {
+      results.moveFailed++;
+      Logger.log(`❌ Error moving channel ${item.channel_name} (${item.channel_id}): ${error.toString()}`);
+      results.failures.push(`Move error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
+    }
+  }
+}
+
+/**
  * Execute the sync plan (legacy mode)
  */
 function executePlan(plan, skipDeletes, collectionOwners) {
@@ -855,28 +878,9 @@ function executePlan(plan, skipDeletes, collectionOwners) {
     failures: []
   };
 
-  // Execute adds and removes using shared helpers
   executeAdds_(plan.toAdd, results, collectionOwners);
+  executeLegacyMoves_(plan.toMove, results);
   executeRemoves_(plan.toRemove, results, skipDeletes);
-
-  // Execute moves (individual)
-  for (const item of plan.toMove) {
-    try {
-      const result = moveChannel(item.channel_id, item.to_collection_id);
-      if (result.success) {
-        results.moveSuccess++;
-        Logger.log(`✅ Moved channel ${item.channel_name} (${item.channel_id}) to ${item.to_collection}`);
-      } else {
-        results.moveFailed++;
-        Logger.log(`❌ Failed to move channel ${item.channel_name} (${item.channel_id}): ${result.error}`);
-        results.failures.push(`Move failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
-      }
-    } catch (error) {
-      results.moveFailed++;
-      Logger.log(`❌ Error moving channel ${item.channel_name} (${item.channel_id}): ${error.toString()}`);
-      results.failures.push(`Move error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
-    }
-  }
 
   return results;
 }
