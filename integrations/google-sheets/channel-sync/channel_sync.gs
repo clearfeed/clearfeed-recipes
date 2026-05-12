@@ -508,23 +508,26 @@ function deleteChannel(channelId) {
 function generateActionPlan(sheetData, collections) {
   // Build lookup structures
   const collectionNameToId = {};
+  const collectionIdToName = {};
   const collectionOwners = {}; // collection_id -> most common owner
   const actualChannelToCollection = {}; // normalized channel_id -> collection_id
   const channelIdToName = {}; // channel_id -> channel_name from API
+  const channelIdToStatus = {}; // channel_id -> status (active/inactive)
 
   for (const col of collections) {
     const normalizedName = normalizeCollectionName(col.name);
     collectionNameToId[normalizedName] = col.id;
+    collectionIdToName[col.id] = col.name;
     collectionOwners[col.id] = null; // Will be determined from channels
 
     // Track channel to collection mapping and owners
     const ownerCounts = {};
     for (const ch of (col.channels || [])) {
       actualChannelToCollection[ch.id] = col.id;
-      // Store channel name from API for later use
       if (ch.name) {
         channelIdToName[ch.id] = ch.name;
       }
+      channelIdToStatus[ch.id] = ch.status;
       // Track most common owner for this collection
       if (ch.owner) {
         ownerCounts[ch.owner] = (ownerCounts[ch.owner] || 0) + 1;
@@ -610,9 +613,13 @@ function generateActionPlan(sheetData, collections) {
     }
   }
 
-  // Channels to remove: in actual but not in desired
+  // Channels to remove: in actual but not in desired (skip inactive)
   for (const [channelId, collectionId] of Object.entries(actualChannelToCollection)) {
     if (!(channelId in desiredChannelToCollection)) {
+      // Skip inactive channels (already removed)
+      if (channelIdToStatus[channelId] && channelIdToStatus[channelId] === 'inactive') {
+        continue;
+      }
       // Find collection and channel names
       let collectionName = "Unknown";
       let channelName = channelId;
@@ -640,7 +647,8 @@ function generateActionPlan(sheetData, collections) {
 
   return {
     plan: plan,
-    collectionOwners: collectionOwners
+    collectionOwners: collectionOwners,
+    collectionIdToName: collectionIdToName
   };
 }
 
@@ -1240,8 +1248,9 @@ function syncCustomerCentricChanges() {
       sendCustomerCentricSyncEmail_({
         startedAt: runStartedAt,
         completedAt: new Date(),
+        addedChannels: [],
         movedCustomers: [],
-        deletedChannels: [],
+        removedChannels: [],
         failures: ["Configuration Error: CONFIG.API_KEY is missing or empty."]
       });
       return;
@@ -1257,8 +1266,9 @@ function syncCustomerCentricChanges() {
       sendCustomerCentricSyncEmail_({
         startedAt: runStartedAt,
         completedAt: new Date(),
+        addedChannels: [],
         movedCustomers: [],
-        deletedChannels: [],
+        removedChannels: [],
         failures: ["Invalid Sheet Format: " + error.message]
       });
       return;
@@ -1270,8 +1280,9 @@ function syncCustomerCentricChanges() {
       sendCustomerCentricSyncEmail_({
         startedAt: runStartedAt,
         completedAt: new Date(),
+        addedChannels: [],
         movedCustomers: [],
-        deletedChannels: [],
+        removedChannels: [],
         failures: ["No Data: No customer-channel mappings found in the sheet."]
       });
       return;
@@ -1282,10 +1293,10 @@ function syncCustomerCentricChanges() {
     const customers = fetchAllCustomers();
     Logger.log(`Fetched ${collections.length} collections and ${customers.length} customers from ClearFeed`);
 
-    const plan = generateCustomerCentricPlan(sheetData, collections, customers);
+    const planData = generateActionPlan(sheetData, collections);
     Logger.log("Action plan generated");
 
-    const planMessage = formatCustomerCentricPlanMessage(plan);
+    const planMessage = formatPlanMessage(planData.plan);
     safeAlert("Sync Plan", planMessage);
 
     const isInteractive = isInteractiveMode();
@@ -1305,7 +1316,7 @@ function syncCustomerCentricChanges() {
     }
 
     if (shouldExecute) {
-      const results = executeCustomerCentricPlan(plan);
+      const results = executeCustomerCentricPlan(planData.plan, customers);
       const resultMessage = formatCustomerCentricResultMessage(results);
       safeAlert("Sync Results", resultMessage);
       Logger.log("Customer-centric sync completed");
@@ -1313,8 +1324,9 @@ function syncCustomerCentricChanges() {
       sendCustomerCentricSyncEmail_({
         startedAt: runStartedAt,
         completedAt: new Date(),
+        addedChannels: results.addedChannels || [],
         movedCustomers: results.movedCustomers || [],
-        deletedChannels: results.deletedChannels || [],
+        removedChannels: results.removedChannels || [],
         failures: (results.failures || [])
       });
     } else {
@@ -1322,8 +1334,9 @@ function syncCustomerCentricChanges() {
       sendCustomerCentricSyncEmail_({
         startedAt: runStartedAt,
         completedAt: new Date(),
+        addedChannels: [],
         movedCustomers: [],
-        deletedChannels: [],
+        removedChannels: [],
         failures: ["Sync cancelled by user."]
       });
     }
@@ -1336,7 +1349,7 @@ function syncCustomerCentricChanges() {
       startedAt: runStartedAt,
       completedAt: new Date(),
       movedCustomers: [],
-      deletedChannels: [],
+      removedChannels: [],
       failures: [`Sync Error: ${error.toString()}`]
     });
   }
@@ -1396,262 +1409,148 @@ function readCustomerCentricSheetData() {
 // Customer-Centric Inbox Model - Plan Generation
 // =============================================================================
 
-/**
- * Generate customer-centric action plan
- * Compares desired state (sheet) with actual state (API)
- */
-function generateCustomerCentricPlan(sheetData, collections, customers) {
-  const collectionNameToId = {};
-  const collectionIdToName = {};
-  const channelIdToName = {};
-  const channelIdToStatus = {};
-
-  for (const col of collections) {
-    const normalizedName = normalizeCollectionName(col.name);
-    collectionNameToId[normalizedName] = col.id;
-    collectionIdToName[col.id] = col.name;
-
-    for (const ch of (col.channels || [])) {
-      if (ch.name) {
-        channelIdToName[ch.id] = ch.name;
-      }
-      channelIdToStatus[ch.id] = ch.status;
-    }
-  }
-
-  const customerNameToCustomer = {};
-  for (const customer of customers) {
-    customerNameToCustomer[normalizeCollectionName(customer.name)] = customer;
-  }
-
-  const plan = {
-    toMove: [],
-    toDelete: [],
-    customersNotFound: [],
-    collectionsNotFound: []
-  };
-
-  const actualChannelToCustomer = {};
-  for (const customer of customers) {
-    if (customer.channel_ids && customer.channel_ids.length > 0) {
-      const channelId = customer.channel_ids[0];
-      actualChannelToCustomer[channelId] = {
-        customer_id: customer.id,
-        customer_name: customer.name,
-        collection_id: customer.collection_id,
-        channel_id: channelId,
-        channel_name: channelIdToName[channelId] || channelId,
-        version: customer.version || 0
-      };
-    }
-  }
-
-  const desiredChannelToCustomer = {};
-
-  for (const mapping of sheetData) {
-    const normalizedCol = mapping._normalized_collection;
-    const normalizedCust = mapping._normalized_customer;
-
-    if (!collectionNameToId[normalizedCol]) {
-      plan.collectionsNotFound.push(mapping.collection_name);
-      continue;
-    }
-
-    const customer = customerNameToCustomer[normalizedCust];
-    if (!customer) {
-      plan.customersNotFound.push(mapping.customer_name);
-      Logger.log(`Customer not found: "${mapping.customer_name}" (normalized: "${normalizedCust}")`);
-      continue;
-    }
-
-    const desiredCollectionId = collectionNameToId[normalizedCol];
-    desiredChannelToCustomer[mapping.channel_id] = {
-      customer_id: customer.id,
-      customer_name: mapping.customer_name,
-      collection_id: desiredCollectionId,
-      collection_name: mapping.collection_name,
-      channel_id: mapping.channel_id,
-      channel_name: mapping.channel_name || mapping.channel_id
-    };
-  }
-
-  for (const [channelId, desired] of Object.entries(desiredChannelToCustomer)) {
-    const actual = actualChannelToCustomer[channelId];
-
-    if (!actual) {
-      continue;
-    }
-
-    if (actual.collection_id !== desired.collection_id) {
-      const fromCollectionName = collectionIdToName[actual.collection_id] || "Unknown";
-
-      plan.toMove.push({
-        customer_id: actual.customer_id,
-        customer_name: desired.customer_name,
-        channel_id: channelId,
-        channel_name: desired.channel_name,
-        from_collection: fromCollectionName,
-        to_collection: desired.collection_name,
-        to_collection_id: desired.collection_id,
-        version: actual.version
-      });
-    }
-  }
-
-  for (const [channelId, actual] of Object.entries(actualChannelToCustomer)) {
-    if (!desiredChannelToCustomer[channelId]) {
-      if (!CONFIG.INCLUDE_DELETES) {
-        continue;
-      }
-
-      const isChannelActive = channelIdToStatus[channelId] && channelIdToStatus[channelId] !== 'inactive';
-      if (!isChannelActive) {
-        continue;
-      }
-
-      const collectionName = collectionIdToName[actual.collection_id] || "Unknown";
-
-      plan.toDelete.push({
-        customer_id: actual.customer_id,
-        customer_name: actual.customer_name,
-        channel_id: channelId,
-        channel_name: actual.channel_name,
-        collection_name: collectionName
-      });
-    }
-  }
-
-  return plan;
-}
-
-/**
- * Format customer-centric plan message
- */
-function formatCustomerCentricPlanMessage(plan) {
-  const lines = [];
-
-  lines.push("CUSTOMER-CENTRIC SYNC PLAN");
-  lines.push("=========================");
-  lines.push("");
-
-  if (plan.customersNotFound.length > 0) {
-    lines.push(`⚠️  Customers NOT FOUND in ClearFeed:`);
-    for (const custName of plan.customersNotFound) {
-      lines.push(`   - ${custName}`);
-    }
-    lines.push("");
-  }
-
-  if (plan.collectionsNotFound.length > 0) {
-    lines.push(`⚠️  Collections NOT FOUND in ClearFeed:`);
-    for (const colName of plan.collectionsNotFound) {
-      lines.push(`   - ${colName}`);
-    }
-    lines.push("");
-  }
-
-  if (plan.toMove.length > 0) {
-    lines.push(`🔄 Customers to MOVE: ${plan.toMove.length}`);
-    for (const item of plan.toMove) {
-      lines.push(`   ~ ${item.customer_name} FROM ${item.from_collection} → ${item.to_collection}`);
-    }
-    lines.push("");
-  }
-
-  if (plan.toDelete.length > 0) {
-    lines.push(`🗑️  Channels to DELETE: ${plan.toDelete.length}`);
-    for (const item of plan.toDelete) {
-      lines.push(`   - ${item.channel_name} (${item.channel_id}) from ${item.collection_name}`);
-      lines.push(`     Customer: ${item.customer_name}`);
-    }
-    lines.push("");
-  }
-
-  if (!CONFIG.INCLUDE_DELETES && plan.toDelete.length > 0) {
-    lines.push("⚠️  WARNING: Delete operations are SKIPPED (CONFIG.INCLUDE_DELETES = false)");
-    lines.push("");
-  }
-
-  if (plan.toMove.length === 0 && plan.toDelete.length === 0) {
-    lines.push("✅ No changes needed - sheet is already in sync!");
-  } else {
-    lines.push("SUMMARY:");
-    lines.push(`  Move: ${plan.toMove.length}`);
-    lines.push(`  Delete: ${plan.toDelete.length} ${!CONFIG.INCLUDE_DELETES ? '(skipped)' : ''}`);
-  }
-
-  return lines.join("\n");
-}
-
 // =============================================================================
 // Customer-Centric Inbox Model - Plan Execution
 // =============================================================================
 
 /**
- * Execute customer-centric plan
+ * Execute customer-centric plan using shared plan format from generateActionPlan()
+ * @param {Object} plan - Plan from generateActionPlan()
+ * @param {Array} customers - Customers from fetchAllCustomers(), used to look up customer_id/version for moves
  */
-function executeCustomerCentricPlan(plan) {
+function executeCustomerCentricPlan(plan, customers) {
   const results = {
+    addSuccess: 0,
+    addFailed: 0,
     moveSuccess: 0,
     moveFailed: 0,
-    deleteSuccess: 0,
-    deleteFailed: 0,
-    deleteSkipped: 0,
+    removeSuccess: 0,
+    removeFailed: 0,
+    removeSkipped: 0,
+    addedChannels: [],
     movedCustomers: [],
-    deletedChannels: [],
+    removedChannels: [],
     failures: []
   };
 
-  for (const item of plan.toMove) {
-    try {
-      const result = moveCustomer(item.customer_id, item.to_collection_id, item.version);
-      if (result.success) {
-        results.moveSuccess++;
-        results.movedCustomers.push({
-          customer_name: item.customer_name,
-          from_collection: item.from_collection,
-          to_collection: item.to_collection
-        });
-        Logger.log(`✅ Moved customer ${item.customer_name} to ${item.to_collection}`);
-      } else {
-        results.moveFailed++;
-        results.failures.push(`Move failed: ${item.customer_name}. ${result.error}`);
-        Logger.log(`❌ Failed to move customer ${item.customer_name}: ${result.error}`);
+  // Build channel_id → customer lookup for moves
+  const channelToCustomer = {};
+  for (const customer of customers) {
+    if (customer.channel_ids) {
+      for (const channelId of customer.channel_ids) {
+        channelToCustomer[channelId] = customer;
       }
-    } catch (error) {
-      results.moveFailed++;
-      results.failures.push(`Move error: ${item.customer_name}. ${error.toString()}`);
-      Logger.log(`❌ Error moving customer ${item.customer_name}: ${error.toString()}`);
     }
   }
 
-  for (const item of plan.toDelete) {
+  // Group adds by collection for efficiency
+  const addsByCollection = {};
+  for (const item of plan.toAdd) {
+    if (!addsByCollection[item.collection_id]) {
+      addsByCollection[item.collection_id] = [];
+    }
+    addsByCollection[item.collection_id].push({ id: item.channel_id });
+  }
+
+  const addItemById = {};
+  for (const item of plan.toAdd) {
+    addItemById[item.channel_id] = item;
+  }
+
+  // Execute adds (grouped by collection)
+  for (const [collectionId, channels] of Object.entries(addsByCollection)) {
+    try {
+      const result = addChannelsToCollection(collectionId, channels);
+      if (result.success) {
+        results.addSuccess += channels.length;
+        Logger.log(`✅ Added ${channels.length} channels to collection ${collectionId}`);
+        for (const ch of channels) {
+          const item = addItemById[ch.id];
+          results.addedChannels.push({
+            id: ch.id,
+            name: (item && item.channel_name) ? item.channel_name : ch.id,
+            collection: item ? item.collection_name : ''
+          });
+        }
+      } else {
+        results.addFailed += channels.length;
+        Logger.log(`❌ Failed to add channels to collection ${collectionId}: ${result.error}`);
+        const failedList = channels.map(ch => {
+          const item = addItemById[ch.id];
+          return `${ch.id} - ${(item && item.channel_name) ? item.channel_name : ch.id}`;
+        }).join(', ');
+        results.failures.push(`Add failed (collection ${collectionId}): ${result.error}. Channels: ${failedList}`);
+      }
+    } catch (error) {
+      results.addFailed += channels.length;
+      Logger.log(`❌ Error adding channels to collection ${collectionId}: ${error.toString()}`);
+      const failedList = channels.map(ch => {
+        const item = addItemById[ch.id];
+        return `${ch.id} - ${(item && item.channel_name) ? item.channel_name : ch.id}`;
+      }).join(', ');
+      results.failures.push(`Add error (collection ${collectionId}): ${error.toString()}. Channels: ${failedList}`);
+    }
+  }
+
+  // Execute moves using moveCustomer (look up customer_id/version from customers data)
+  for (const item of plan.toMove) {
+    const customer = channelToCustomer[item.channel_id];
+    if (!customer) {
+      results.moveFailed++;
+      results.failures.push(`Move failed: ${item.channel_id} - no customer found for channel`);
+      Logger.log(`❌ No customer found for channel ${item.channel_id}, cannot move`);
+      continue;
+    }
+
+    try {
+      const result = moveCustomer(customer.id, item.to_collection_id, customer.version || 0);
+      if (result.success) {
+        results.moveSuccess++;
+        results.movedCustomers.push({
+          customer_name: customer.name,
+          from_collection: item.from_collection,
+          to_collection: item.to_collection
+        });
+        Logger.log(`✅ Moved customer ${customer.name} to ${item.to_collection}`);
+      } else {
+        results.moveFailed++;
+        results.failures.push(`Move failed: ${customer.name}. ${result.error}`);
+        Logger.log(`❌ Failed to move customer ${customer.name}: ${result.error}`);
+      }
+    } catch (error) {
+      results.moveFailed++;
+      results.failures.push(`Move error: ${customer.name}. ${error.toString()}`);
+      Logger.log(`❌ Error moving customer ${customer.name}: ${error.toString()}`);
+    }
+  }
+
+  // Execute removes
+  for (const item of plan.toRemove) {
     if (!CONFIG.INCLUDE_DELETES) {
-      results.deleteSkipped++;
-      Logger.log(`⏭️ Skipped delete of channel ${item.channel_name} (${item.channel_id}) - deletes disabled`);
+      results.removeSkipped++;
+      Logger.log(`⏭️ Skipped removal of channel ${item.channel_name} (${item.channel_id}) - deletes disabled`);
       continue;
     }
 
     try {
       const result = deleteChannel(item.channel_id);
       if (result.success) {
-        results.deleteSuccess++;
-        results.deletedChannels.push({
+        results.removeSuccess++;
+        results.removedChannels.push({
           channel_id: item.channel_id,
           channel_name: item.channel_name,
-          customer_name: item.customer_name,
           collection_name: item.collection_name
         });
-        Logger.log(`✅ Deleted channel ${item.channel_name} (${item.channel_id})`);
+        Logger.log(`✅ Removed channel ${item.channel_name} (${item.channel_id})`);
       } else {
-        results.deleteFailed++;
-        results.failures.push(`Delete failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
-        Logger.log(`❌ Failed to delete channel ${item.channel_name}: ${result.error}`);
+        results.removeFailed++;
+        results.failures.push(`Remove failed: ${item.channel_id} - ${item.channel_name}. ${result.error}`);
+        Logger.log(`❌ Failed to remove channel ${item.channel_name}: ${result.error}`);
       }
     } catch (error) {
-      results.deleteFailed++;
-      results.failures.push(`Delete error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
-      Logger.log(`❌ Error deleting channel ${item.channel_name}: ${error.toString()}`);
+      results.removeFailed++;
+      results.failures.push(`Remove error: ${item.channel_id} - ${item.channel_name}. ${error.toString()}`);
+      Logger.log(`❌ Error removing channel ${item.channel_name}: ${error.toString()}`);
     }
   }
 
@@ -1668,6 +1567,13 @@ function formatCustomerCentricResultMessage(results) {
   lines.push("=============");
   lines.push("");
 
+  if (results.addSuccess > 0) {
+    lines.push(`✅ Added: ${results.addSuccess} channel(s)`);
+  }
+  if (results.addFailed > 0) {
+    lines.push(`❌ Add failed: ${results.addFailed} channel(s)`);
+  }
+
   if (results.moveSuccess > 0) {
     lines.push(`✅ Moved: ${results.moveSuccess} customer(s)`);
   }
@@ -1675,20 +1581,20 @@ function formatCustomerCentricResultMessage(results) {
     lines.push(`❌ Move failed: ${results.moveFailed} customer(s)`);
   }
 
-  if (results.deleteSkipped > 0) {
-    lines.push(`⏭️  Delete skipped: ${results.deleteSkipped} channel(s) (deletes disabled)`);
+  if (results.removeSkipped > 0) {
+    lines.push(`⏭️  Remove skipped: ${results.removeSkipped} channel(s) (deletes disabled)`);
   }
-  if (results.deleteSuccess > 0) {
-    lines.push(`✅ Deleted: ${results.deleteSuccess} channel(s)`);
+  if (results.removeSuccess > 0) {
+    lines.push(`✅ Removed: ${results.removeSuccess} channel(s)`);
   }
-  if (results.deleteFailed > 0) {
-    lines.push(`❌ Delete failed: ${results.deleteFailed} channel(s)`);
+  if (results.removeFailed > 0) {
+    lines.push(`❌ Remove failed: ${results.removeFailed} channel(s)`);
   }
 
   lines.push("");
 
-  const totalActions = results.moveSuccess + results.deleteSuccess;
-  const totalFailed = results.moveFailed + results.deleteFailed;
+  const totalActions = results.addSuccess + results.moveSuccess + results.removeSuccess;
+  const totalFailed = results.addFailed + results.moveFailed + results.removeFailed;
 
   if (totalFailed === 0 && totalActions > 0) {
     lines.push("✅ All actions completed successfully!");
@@ -2004,6 +1910,16 @@ function sendCustomerCentricSyncEmail_(runData) {
   bodyLines.push('Customer-Centric Sync completed:');
   bodyLines.push('');
 
+  bodyLines.push('Channels Added:');
+  if (runData.addedChannels && runData.addedChannels.length > 0) {
+    for (const ch of runData.addedChannels) {
+      bodyLines.push(`- ${ch.name} (${ch.id}) in ${ch.collection}`);
+    }
+  } else {
+    bodyLines.push('None');
+  }
+  bodyLines.push('');
+
   bodyLines.push('Customers Moved:');
   if (runData.movedCustomers && runData.movedCustomers.length > 0) {
     for (const cust of runData.movedCustomers) {
@@ -2014,11 +1930,10 @@ function sendCustomerCentricSyncEmail_(runData) {
   }
   bodyLines.push('');
 
-  bodyLines.push('Channels Deleted:');
-  if (runData.deletedChannels && runData.deletedChannels.length > 0) {
-    for (const ch of runData.deletedChannels) {
+  bodyLines.push('Channels Removed:');
+  if (runData.removedChannels && runData.removedChannels.length > 0) {
+    for (const ch of runData.removedChannels) {
       bodyLines.push(`- ${ch.channel_name} (${ch.channel_id}) from ${ch.collection_name}`);
-      bodyLines.push(`  Customer: ${ch.customer_name}`);
     }
   } else {
     bodyLines.push('None');
