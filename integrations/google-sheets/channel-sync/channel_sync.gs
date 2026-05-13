@@ -501,8 +501,7 @@ function deleteChannel(channelId) {
   const response = UrlFetchApp.fetch(url, {
     method: 'DELETE',
     headers: {
-      'Authorization': `Bearer ${CONFIG.API_KEY}`,
-      'Content-Type': 'application/json'
+      'Authorization': `Bearer ${CONFIG.API_KEY}`
     },
     muteHttpExceptions: true
   });
@@ -673,7 +672,8 @@ function generateActionPlan(sheetData, collections) {
   return {
     plan: plan,
     collectionOwners: collectionOwners,
-    collectionIdToName: collectionIdToName
+    collectionIdToName: collectionIdToName,
+    channelIdToStatus: channelIdToStatus
   };
 }
 
@@ -1342,7 +1342,7 @@ function syncCustomerCentricChanges() {
     }
 
     if (shouldExecute) {
-      const results = executeCustomerCentricPlan(planData.plan, customers, planData.collectionOwners);
+      const results = executeCustomerCentricPlan(planData.plan, customers, planData.collectionOwners, planData.channelIdToStatus);
       const resultMessage = formatCustomerCentricResultMessage(results);
       safeAlert("Sync Results", resultMessage);
       Logger.log("Customer-centric sync completed");
@@ -1395,7 +1395,7 @@ function syncCustomerCentricChanges() {
  * @param {Object} plan - Plan from generateActionPlan()
  * @param {Array} customers - Customers from fetchAllCustomers(), used to look up customer_id/version for moves
  */
-function executeCustomerCentricPlan(plan, customers, collectionOwners) {
+function executeCustomerCentricPlan(plan, customers, collectionOwners, channelIdToStatus) {
   const results = {
     addSuccess: 0,
     addFailed: 0,
@@ -1419,7 +1419,7 @@ function executeCustomerCentricPlan(plan, customers, collectionOwners) {
   const customerActiveChannels = {};
   for (const customer of customers) {
     if (customer.channel_ids) {
-      const activeIds = customer.channel_ids.filter(id => id);
+      const activeIds = customer.channel_ids.filter(id => id && channelIdToStatus[id] !== 'inactive');
       customerActiveChannels[customer.id] = activeIds;
       for (const channelId of activeIds) {
         channelToCustomer[channelId] = customer;
