@@ -523,6 +523,13 @@ function deleteChannel(channelId) {
 // =============================================================================
 
 /**
+ * Filter channels to only include those with non-empty names
+ */
+function getNamedChannels_(collection) {
+  return (collection.channels || []).filter(ch => ch.name && ch.name.trim() !== '');
+}
+
+/**
  * Generate an action plan by comparing desired state (sheet) with actual state (ClearFeed)
  */
 function generateActionPlan(sheetData, collections) {
@@ -542,11 +549,9 @@ function generateActionPlan(sheetData, collections) {
 
     // Track channel to collection mapping and owners
     const ownerCounts = {};
-    for (const ch of (col.channels || [])) {
+    for (const ch of getNamedChannels_(col)) {
       actualChannelToCollection[ch.id] = col.id;
-      if (ch.name) {
-        channelIdToName[ch.id] = ch.name;
-      }
+      channelIdToName[ch.id] = ch.name;
       channelIdToStatus[ch.id] = ch.status;
       // Track most common owner for this collection
       if (ch.owner) {
@@ -647,9 +652,9 @@ function generateActionPlan(sheetData, collections) {
       for (const col of collections) {
         if (col.id === collectionId) {
           collectionName = col.name;
-          for (const ch of (col.channels || [])) {
+          for (const ch of getNamedChannels_(col)) {
             if (ch.id === channelId) {
-              channelName = ch.name || channelId;
+              channelName = ch.name;
               break;
             }
           }
@@ -1102,16 +1107,14 @@ function populateCollectionChannels() {
     let totalChannels = 0;
 
     for (const collection of collections) {
-      const channels = collection.channels || [];
-
-      for (const channel of channels) {
+      for (const channel of getNamedChannels_(collection)) {
         if (channel.status === 'inactive') {
           continue;
         }
 
         sheetData.push({
           collection: collection.name,
-          channel_name: channel.name || channel.id,
+          channel_name: channel.name,
           channel_id: channel.id
         });
         totalChannels++;
@@ -1179,15 +1182,15 @@ function populateInitialMappings() {
     const channelIdToName = {};
     for (const col of collections) {
       collectionIdToName[col.id] = col.name;
-      for (const ch of (col.channels || [])) {
-        channelIdToName[ch.id] = ch.name || ch.id;
+      for (const ch of getNamedChannels_(col)) {
+        channelIdToName[ch.id] = ch.name;
       }
     }
 
     // Build channel status lookup to filter inactive channels
     const channelIdToStatus = {};
     for (const col of collections) {
-      for (const ch of (col.channels || [])) {
+      for (const ch of getNamedChannels_(col)) {
         channelIdToStatus[ch.id] = ch.status;
       }
     }
@@ -1572,9 +1575,9 @@ function testCustomerConnection() {
     const channelIdToStatus = {};
     const channelIdToName = {};
     for (const col of collections) {
-      for (const ch of (col.channels || [])) {
+      for (const ch of getNamedChannels_(col)) {
         channelIdToStatus[ch.id] = ch.status;
-        channelIdToName[ch.id] = ch.name || ch.id;
+        channelIdToName[ch.id] = ch.name;
       }
     }
 
