@@ -4,7 +4,7 @@ A Google Apps Script that syncs collection-to-channel mappings from a Google She
 
 The script supports two operational modes:
 - **Legacy mode** (`IS_ON_CUSTOMER_INBOX_MODEL: false`) - Manages Collection-to-Channel mappings directly
-- **Customer-Centric Inbox mode** (`IS_ON_CUSTOMER_INBOX_MODEL: true`) - Manages Customer-to-Channel-to-Collection mappings, where each customer has exactly one channel
+- **Customer-Centric Inbox mode** (`IS_ON_CUSTOMER_INBOX_MODEL: true`) - Manages Customer-to-Channel-to-Collection mappings
 
 ## Features
 
@@ -216,7 +216,7 @@ SUMMARY:
 - **Add**: The channel doesn't exist in ClearFeed and will be added
 - **Move**: The channel exists but is in a different collection; it will be moved
   - Legacy mode: moves the channel directly
-  - Customer-centric mode: moves the customer (which owns the channel) to the new collection
+  - Customer-centric mode: moves the customer (which owns the channel) to the new collection. If a customer has multiple channels, all of them must be moved to the same target collection — partial moves are not supported.
 - **Remove**: The channel exists in ClearFeed but not in your sheet (see warning below)
 
 ### Collection Not Found Warning
