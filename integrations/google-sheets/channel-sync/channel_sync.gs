@@ -54,8 +54,8 @@ function onOpen() {
   const testFn = CONFIG.IS_ON_CUSTOMER_INBOX_MODEL ? 'testCustomerConnection' : 'testClearfeedConnection';
 
   ui.createMenu('ClearFeed Channel Sync')
-    .addItem('📥 Populate Initial Mappings', populateFn)
-    .addItem('🔄 Sync Channels', syncFn)
+    .addItem('📥 Download Channel Mapping', populateFn)
+    .addItem('🔄 Upload/Sync Channel Mapping', syncFn)
     .addSeparator()
     .addItem('🧪 Test Connection', testFn)
     .addItem('📋 View Logs', 'showLogs')
@@ -254,9 +254,8 @@ function showLogs() {
  */
 function validateSheetHeaders(headers, isCustomerCentric) {
   const collectionHeader = String(headers[0] || '').toLowerCase().trim();
-  const channelIdHeader = String(headers[isCustomerCentric ? 3 : 2] || '').toLowerCase().trim();
 
-  // Validate Collection column (must be first column)
+  // Validate Collection column (column 1)
   if (!collectionHeader.includes('collection')) {
     throw new Error("Column 1 header must contain 'Collection'. Found: '" + headers[0] + "'");
   }
@@ -264,12 +263,32 @@ function validateSheetHeaders(headers, isCustomerCentric) {
     throw new Error("Column 1 header must be 'Collection', not 'Channel' or 'Customer'. Found: '" + headers[0] + "'");
   }
 
-  // Validate Channel ID column (must be last column)
+  if (isCustomerCentric) {
+    // Customer column (column 2)
+    const customerHeader = String(headers[1] || '').toLowerCase().trim();
+    if (!customerHeader.includes('customer')) {
+      throw new Error("Column 2 header must contain 'Customer'. Found: '" + headers[1] + "'");
+    }
+    if (customerHeader.includes('channel') || customerHeader.includes('id') || customerHeader.includes('collection')) {
+      throw new Error("Column 2 header must contain 'Customer', not 'Channel', 'ID', or 'Collection'. Found: '" + headers[1] + "'");
+    }
+  }
+
+  // Channel Name column (column 2 in legacy, column 3 in customer-centric)
+  const channelNameCol = isCustomerCentric ? 2 : 1;
+  const channelNameHeader = String(headers[channelNameCol] || '').toLowerCase().trim();
+  if (channelNameHeader.includes('id') || channelNameHeader.includes('customer') || channelNameHeader.includes('collection')) {
+    throw new Error("Column " + (channelNameCol + 1) + " header must not contain 'ID', 'Customer', or 'Collection'. Found: '" + headers[channelNameCol] + "'");
+  }
+
+  // Channel ID column (last column)
+  const channelIdCol = isCustomerCentric ? 3 : 2;
+  const channelIdHeader = String(headers[channelIdCol] || '').toLowerCase().trim();
   if (!channelIdHeader.includes('channel')) {
-    throw new Error("Column " + (isCustomerCentric ? "4" : "3") + " header must contain 'Channel'. Found: '" + headers[isCustomerCentric ? 3 : 2] + "'");
+    throw new Error("Column " + (channelIdCol + 1) + " header must contain 'Channel'. Found: '" + headers[channelIdCol] + "'");
   }
   if (channelIdHeader.includes('customer') || channelIdHeader.includes('name')) {
-    throw new Error("Column " + (isCustomerCentric ? "4" : "3") + " header must be 'Channel ID', not contain 'Customer' or 'Name'. Found: '" + headers[isCustomerCentric ? 3 : 2] + "'");
+    throw new Error("Column " + (channelIdCol + 1) + " header must be 'Channel ID', not contain 'Customer' or 'Name'. Found: '" + headers[channelIdCol] + "'");
   }
 }
 
