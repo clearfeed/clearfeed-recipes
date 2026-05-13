@@ -549,9 +549,11 @@ function generateActionPlan(sheetData, collections) {
     // Track channel to collection mapping and owners
     const ownerCounts = {};
     for (const ch of getNamedChannels_(col)) {
+      channelIdToStatus[ch.id] = ch.status;
+      // Only include active channels in actual state (inactive channels can be re-added)
+      if (ch.status === 'inactive') continue;
       actualChannelToCollection[ch.id] = col.id;
       channelIdToName[ch.id] = ch.name;
-      channelIdToStatus[ch.id] = ch.status;
       // Track most common owner for this collection
       if (ch.owner) {
         ownerCounts[ch.owner] = (ownerCounts[ch.owner] || 0) + 1;
@@ -637,13 +639,9 @@ function generateActionPlan(sheetData, collections) {
     }
   }
 
-  // Channels to remove: in actual but not in desired (skip inactive)
+  // Channels to remove: in actual but not in desired
   for (const [channelId, collectionId] of Object.entries(actualChannelToCollection)) {
     if (!(channelId in desiredChannelToCollection)) {
-      // Skip inactive channels (already removed)
-      if (channelIdToStatus[channelId] && channelIdToStatus[channelId] === 'inactive') {
-        continue;
-      }
       // Find collection and channel names
       let collectionName = "Unknown";
       let channelName = channelId;
