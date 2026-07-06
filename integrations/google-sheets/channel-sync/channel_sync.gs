@@ -57,6 +57,8 @@ function onOpen() {
     .addItem('📥 Download Channel Mapping', populateFn)
     .addItem('🔄 Upload/Sync Channel Mapping', syncFn)
     .addSeparator()
+    .addItem('🌐 Portal Update', 'syncPortalSettings')
+    .addSeparator()
     .addItem('🧪 Test Connection', testFn)
     .addItem('📋 View Logs', 'showLogs')
     .addToUi();
@@ -1771,5 +1773,371 @@ function sendCustomerCentricSyncEmail_(runData) {
     } catch (e2) {
       Logger.log(`Failed to send Customer-Centric sync email: ${e2.toString()}`);
     }
+  }
+}
+
+// =============================================================================
+// Portal Update - NEW FEATURE
+// =============================================================================
+
+/**
+ * Read portal settings from the sheet (Customer-Centric mode only)
+ * Reads columns 1-5: [Collection, Customer, Channel Name, Channel ID, Enable Portal]
+ * Returns array of objects with customer_name, channel_id, enable_portal (boolean)
+ * Only includes rows where column 5 value is "yes" or "no" (case-insensitive)
+ */
+function readPortalSheetData_() {
+  const sheet = getSheet();
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow < 2) {
+    return [];
+  }
+
+  // Read all 5 columns
+  const data = sheet.getRange(2, 1, lastRow - 1, 5).getValues();
+  const portalData = [];
+
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    const collectionName = row[0];
+    const customerName = row[1];
+    const channelName = row[2];
+    const channelId = row[3];
+    const enablePortalValue = row[4];
+
+    // Skip rows missing Collection or Channel ID
+    if (!collectionName || !channelId) continue;
+
+    // Check column 5 for "yes" or "no" values (case-insensitive)
+    const trimmedValue = String(enablePortalValue || '').trim().toLowerCase();
+    if (trimmedValue !== 'yes' && trimmedValue !== 'no') {
+      continue; // Skip rows that don't have "yes" or "no"
+    }
+
+    portalData.push({
+      customer_name: customerName ? String(customerName).trim() : '',
+      channel_id: String(channelId).trim(),
+      enable_portal: trimmedValue === 'yes'
+    });
+  }
+
+  return portalData;
+}
+
+/**
+ * Update customer portal configuration via API
+ * Makes PATCH request to /customers/:id
+ * @param {string} customerId - The customer ID
+ * @param {boolean} enabled - Whether to enable or disable portal
+ * @param {number} version - The current customer version for optimistic locking
+ * @returns {Object} - { success: true } on success, { success: false, error: string } on failure
+ */
+function updateCustomerPortal_(customerId, enabled, version) {
+  const url = `${BASE_URL}/customers/${customerId}`;
+
+  const payload = {
+    portal_config: { enabled: enabled },
+    version: version
+  };
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${CONFIG.API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+
+  const code = response.getResponseCode();
+  if (code >= 200 && code < 300) {
+    return { success: true };
+  } else {
+    return {
+      success: false,
+      error: `API error (${code}): ${response.getContentText()}`
+    };
+  }
+}
+
+/**
+ * Main entry point for Portal Update feature
+ * Syncs portal enable/disable settings from column 5 of the sheet to ClearFeed customers
+ * Only works in Customer-Centric mode (IS_ON_CUSTOMER_INBOX_MODEL = true)
+ */
+function syncPortalSettings() {
+  try {
+    Logger.log("Starting portal settings sync...");
+
+    // Guard: Check if in Customer-Centric mode
+    if (!CONFIG.IS_ON_CUSTOMER_INBOX_MODEL) {
+      safeAlert("Feature Not Available", "Portal Update is only available in Customer-Centric Inbox Model.\n\nPlease set CONFIG.IS_ON_CUSTOMER_INBOX_MODEL = true to use this feature.");
+      Logger.log("Portal Update skipped - not in Customer-Centric mode");
+      return;
+    }
+
+    // Guard: Check API key is configured
+    if (!CONFIG.API_KEY || CONFIG.API_KEY === "") {
+      safeAlert("Configuration Error", "Please update CONFIG.API_KEY with your ClearFeed API key.");
+      Logger.log("Portal Update failed - API key not configured");
+      return;
+    }
+
+    // Validate column 5 header contains "portal"
+    const sheet = getSheet();
+    const headers = sheet.getRange(1, 1, 1, 5).getValues()[0];
+    const column5Header = String(headers[4] || '').toLowerCase().trim();
+
+    if (!column5Header.includes('portal')) {
+      safeAlert("Invalid Sheet Format", `Column 5 header must contain "Portal".\n\nFound: "${headers[4] || ''}"\n\nPlease add a header "Enable Portal" to column E (column 5) and fill in values (Yes/No).`);
+      Logger.log("Portal Update failed - column 5 header does not contain 'portal'");
+      return;
+    }
+
+    // Read portal settings from sheet
+    const portalData = readPortalSheetData_();
+    if (portalData.length === 0) {
+      safeAlert("No Portal Data", "No rows found with 'Yes' or 'No' in column 5 (Enable Portal).\n\nPlease fill in column E with 'Yes' to enable portal or 'No' to disable portal for customers.");
+      Logger.log("Portal Update skipped - no data found in column 5");
+      return;
+    }
+    Logger.log(`Read ${portalData.length} portal settings from sheet`);
+
+    // Fetch all customers from ClearFeed
+    const customers = fetchAllCustomers();
+    Logger.log(`Fetched ${customers.length} customers from ClearFeed`);
+
+    // Build customer name -> customer map (case-insensitive lookup)
+    const customerMap = {};
+    for (const customer of customers) {
+      const normalizedName = String(customer.name || '').toLowerCase().trim();
+      customerMap[normalizedName] = customer;
+    }
+
+    // Deduplicate by customer name (last occurrence wins)
+    // Split into toEnable and toDisable arrays
+    // Track customer names not found in ClearFeed
+    const customerPortalMap = {}; // customer_name -> { customer, enabled, channel_id }
+    const customersNotFound = new Set();
+
+    for (const row of portalData) {
+      const normalizedName = row.customer_name.toLowerCase().trim();
+      const customer = customerMap[normalizedName];
+
+      if (!customer) {
+        customersNotFound.add(row.customer_name);
+        continue;
+      }
+
+      // Last occurrence wins for each customer
+      customerPortalMap[normalizedName] = {
+        customer: customer,
+        enabled: row.enable_portal,
+        channel_id: row.channel_id
+      };
+    }
+
+    // Build toEnable and toDisable lists
+    // Check current portal state and only include customers that need changes
+    const toEnable = [];
+    const toDisable = [];
+    const alreadyCorrect = []; // Customers already in desired state
+
+    for (const [normalizedName, data] of Object.entries(customerPortalMap)) {
+      const customer = data.customer;
+      const currentState = customer.portal_config?.enabled || false;
+      const desiredState = data.enabled;
+
+      // Only add to list if current state differs from desired state
+      if (desiredState && !currentState) {
+        // Portal should be enabled but is currently disabled
+        toEnable.push(data);
+      } else if (!desiredState && currentState) {
+        // Portal should be disabled but is currently enabled
+        toDisable.push(data);
+      } else {
+        // Already in desired state - no change needed
+        alreadyCorrect.push({
+          customer_name: customer.name,
+          current_state: currentState ? 'enabled' : 'disabled',
+          desired_state: desiredState ? 'enabled' : 'disabled'
+        });
+      }
+    }
+
+    // Show plan
+    const planLines = [];
+    planLines.push("PORTAL UPDATE PLAN");
+    planLines.push("===================");
+    planLines.push("");
+
+    if (toEnable.length > 0) {
+      planLines.push(`✅ Portal will be ENABLED for ${toEnable.length} customer(s):`);
+      for (const item of toEnable) {
+        planLines.push(`   + ${item.customer.name} (ID: ${item.customer.id})`);
+      }
+      planLines.push("");
+    }
+
+    if (toDisable.length > 0) {
+      planLines.push(`🚫 Portal will be DISABLED for ${toDisable.length} customer(s):`);
+      for (const item of toDisable) {
+        planLines.push(`   - ${item.customer.name} (ID: ${item.customer.id})`);
+      }
+      planLines.push("");
+    }
+
+    if (alreadyCorrect.length > 0) {
+      planLines.push(`⏭️  No change needed for ${alreadyCorrect.length} customer(s) (already in desired state):`);
+      for (const item of alreadyCorrect) {
+        planLines.push(`   ✓ ${item.customer_name}`);
+      }
+      planLines.push("");
+    }
+
+    if (customersNotFound.size > 0) {
+      planLines.push(`⚠️  Customers NOT FOUND in ClearFeed (skipped):`);
+      for (const name of customersNotFound) {
+        planLines.push(`   - ${name}`);
+      }
+      planLines.push("");
+    }
+
+    if (toEnable.length === 0 && toDisable.length === 0) {
+      // All customers are already in desired state or not found
+      if (alreadyCorrect.length > 0) {
+        planLines.push("");
+        planLines.push("✅ All customers are already in their desired portal state.");
+        planLines.push("");
+        planLines.push("No changes required - portal settings are already correct!");
+      } else if (customersNotFound.size > 0) {
+        planLines.push("");
+        planLines.push("⚠️  No valid customers found to update.");
+        planLines.push("");
+        planLines.push("All specified customers were not found in ClearFeed.");
+      } else {
+        planLines.push("");
+        planLines.push("⏭️  No portal changes needed.");
+      }
+      safeAlert("Portal Update Plan", planLines.join("\n"));
+      Logger.log("Portal Update skipped - no changes needed");
+      return;
+    }
+
+    planLines.push("SUMMARY:");
+    planLines.push(`  Enable: ${toEnable.length}`);
+    planLines.push(`  Disable: ${toDisable.length}`);
+    if (alreadyCorrect.length > 0) {
+      planLines.push(`  No change: ${alreadyCorrect.length} (already in desired state)`);
+    }
+    if (customersNotFound.size > 0) {
+      planLines.push(`  Skipped: ${customersNotFound.size} (not found in ClearFeed)`);
+    }
+
+    safeAlert("Portal Update Plan", planLines.join("\n"));
+
+    // Confirm before executing (skip in non-interactive mode)
+    const isInteractive = isInteractiveMode();
+    let shouldExecute = false;
+
+    if (isInteractive) {
+      const ui = SpreadsheetApp.getUi();
+      const response = ui.alert(
+        "Confirm Portal Update",
+        "Do you want to execute this plan?",
+        ui.ButtonSet.YES_NO
+      );
+      shouldExecute = (response === ui.Button.YES);
+    } else {
+      shouldExecute = true;
+      Logger.log("Non-interactive mode: executing portal update automatically");
+    }
+
+    if (!shouldExecute) {
+      Logger.log("Portal Update cancelled by user");
+      return;
+    }
+
+    // Execute portal updates
+    const results = {
+      enableSuccess: 0,
+      enableFailed: 0,
+      disableSuccess: 0,
+      disableFailed: 0
+    };
+
+    // Process enables
+    for (const item of toEnable) {
+      try {
+        const result = updateCustomerPortal_(item.customer.id, true, item.customer.version || 0);
+        if (result.success) {
+          results.enableSuccess++;
+          Logger.log(`✅ Enabled portal for customer ${item.customer.name} (ID: ${item.customer.id})`);
+        } else {
+          results.enableFailed++;
+          Logger.log(`❌ Failed to enable portal for customer ${item.customer.name}: ${result.error}`);
+        }
+      } catch (error) {
+        results.enableFailed++;
+        Logger.log(`❌ Error enabling portal for customer ${item.customer.name}: ${error.toString()}`);
+      }
+    }
+
+    // Process disables
+    for (const item of toDisable) {
+      try {
+        const result = updateCustomerPortal_(item.customer.id, false, item.customer.version || 0);
+        if (result.success) {
+          results.disableSuccess++;
+          Logger.log(`✅ Disabled portal for customer ${item.customer.name} (ID: ${item.customer.id})`);
+        } else {
+          results.disableFailed++;
+          Logger.log(`❌ Failed to disable portal for customer ${item.customer.name}: ${result.error}`);
+        }
+      } catch (error) {
+        results.disableFailed++;
+        Logger.log(`❌ Error disabling portal for customer ${item.customer.name}: ${error.toString()}`);
+      }
+    }
+
+    // Show results
+    const resultLines = [];
+    resultLines.push("PORTAL UPDATE RESULTS");
+    resultLines.push("=====================");
+    resultLines.push("");
+
+    if (results.enableSuccess > 0) {
+      resultLines.push(`✅ Portal enabled: ${results.enableSuccess} customer(s)`);
+    }
+    if (results.enableFailed > 0) {
+      resultLines.push(`❌ Enable failed: ${results.enableFailed} customer(s)`);
+    }
+
+    if (results.disableSuccess > 0) {
+      resultLines.push(`✅ Portal disabled: ${results.disableSuccess} customer(s)`);
+    }
+    if (results.disableFailed > 0) {
+      resultLines.push(`❌ Disable failed: ${results.disableFailed} customer(s)`);
+    }
+
+    resultLines.push("");
+
+    const totalSuccess = results.enableSuccess + results.disableSuccess;
+    const totalFailed = results.enableFailed + results.disableFailed;
+
+    if (totalFailed === 0 && totalSuccess > 0) {
+      resultLines.push("✅ All portal updates completed successfully!");
+    } else if (totalFailed > 0) {
+      resultLines.push("⚠️  Some updates failed. Check logs for details.");
+    }
+
+    safeAlert("Portal Update Results", resultLines.join("\n"));
+    Logger.log("Portal settings sync completed");
+
+  } catch (error) {
+    Logger.log(`Error during portal update: ${error.toString()}`);
+    safeAlert("Portal Update Error", `An error occurred: ${error.toString()}`);
   }
 }
