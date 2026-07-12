@@ -1887,9 +1887,27 @@ function syncPortalSettings() {
 
     // Validate column 5 header contains "portal"
     const sheet = getSheet();
-    const headers = sheet.getRange(1, 1, 1, 5).getValues()[0];
-    const column5Header = String(headers[4] || '').toLowerCase().trim();
 
+    // Check if sheet has at least 5 columns
+    if (sheet.getLastColumn() < 5) {
+      safeAlert("Invalid Sheet Format", `Column 5 header must contain "Portal".\n\nPlease add a header "Enable Portal" to column E (column 5) and fill in values (Yes/No).`);
+      Logger.log("Portal Update failed - sheet has fewer than 5 columns");
+      return;
+    }
+
+    const headers = sheet.getRange(1, 1, 1, 5).getValues()[0];
+
+    // Validate first 4 column headers (shared validation with customer-centric sync)
+    try {
+      validateSheetHeaders([headers[0], headers[1], headers[2], headers[3]], true);
+    } catch (error) {
+      safeAlert("Invalid Sheet Format", "Sheet headers are incorrect for columns 1-4:\n\n" + error.message + "\n\nPlease ensure columns 1-4 follow the Customer-Centric format: Collection | Customer | Channel Name | Channel ID");
+      Logger.log("Portal Update failed - column headers 1-4 validation failed: " + error.message);
+      return;
+    }
+
+    // Validate column 5 header
+    const column5Header = String(headers[4] || '').toLowerCase().trim();
     if (!column5Header.includes('portal')) {
       safeAlert("Invalid Sheet Format", `Column 5 header must contain "Portal".\n\nFound: "${headers[4] || ''}"\n\nPlease add a header "Enable Portal" to column E (column 5) and fill in values (Yes/No).`);
       Logger.log("Portal Update failed - column 5 header does not contain 'portal'");
@@ -1910,32 +1928,68 @@ function syncPortalSettings() {
     Logger.log(`Fetched ${customers.length} customers from ClearFeed`);
 
     // Build customer name -> customer map (case-insensitive lookup)
+    // AND channel_id -> customer map for fallback lookup
     const customerMap = {};
+    const channelToCustomerMap = {};
     for (const customer of customers) {
       const normalizedName = String(customer.name || '').toLowerCase().trim();
       customerMap[normalizedName] = customer;
+
+      // Build channel_id -> customer map for fallback lookup
+      if (customer.channel_ids) {
+        for (const cid of customer.channel_ids) {
+          if (cid) {
+            channelToCustomerMap[String(cid).trim()] = customer;
+          }
+        }
+      }
     }
 
-    // Deduplicate by customer name (last occurrence wins)
-    // Split into toEnable and toDisable arrays
-    // Track customer names not found in ClearFeed
-    const customerPortalMap = {}; // customer_name -> { customer, enabled, channel_id }
+    // Deduplicate by customer ID (last occurrence wins)
+    // Track customers not found in ClearFeed
+    const customerPortalMap = {}; // customer_id -> { customer, enabled, channel_id, lookup_method }
     const customersNotFound = new Set();
 
     for (const row of portalData) {
-      const normalizedName = row.customer_name.toLowerCase().trim();
-      const customer = customerMap[normalizedName];
+      let customer = null;
+      let lookupMethod = '';
+
+      // Try customer name lookup first
+      if (row.customer_name) {
+        const normalizedName = row.customer_name.toLowerCase().trim();
+        customer = customerMap[normalizedName];
+        if (customer) {
+          lookupMethod = 'name';
+        }
+      }
+
+      // Fallback to channel_id lookup if name lookup failed
+      if (!customer && row.channel_id) {
+        customer = channelToCustomerMap[row.channel_id];
+        if (customer) {
+          lookupMethod = 'channel_id';
+        }
+      }
 
       if (!customer) {
-        customersNotFound.add(row.customer_name);
+        // Track what we couldn't find
+        const identifier = row.customer_name || "Channel ID: " + row.channel_id;
+        customersNotFound.add(identifier);
         continue;
       }
 
+      // Check for conflicting portal values for the same customer
+      const existingData = customerPortalMap[customer.id];
+      if (existingData && existingData.enabled !== row.enable_portal) {
+        Logger.log(`⚠️  Warning: Customer "${customer.name}" has conflicting portal values in the sheet. Previous: "${existingData.enabled ? 'Yes' : 'No'}", Current: "${row.enable_portal ? 'Yes' : 'No'}". Using current value (last occurrence wins).`);
+      }
+
       // Last occurrence wins for each customer
-      customerPortalMap[normalizedName] = {
+      customerPortalMap[customer.id] = {
         customer: customer,
         enabled: row.enable_portal,
-        channel_id: row.channel_id
+        channel_id: row.channel_id,
+        lookup_method: lookupMethod
       };
     }
 
@@ -1945,7 +1999,7 @@ function syncPortalSettings() {
     const toDisable = [];
     const alreadyCorrect = []; // Customers already in desired state
 
-    for (const [normalizedName, data] of Object.entries(customerPortalMap)) {
+    for (const [customerId, data] of Object.entries(customerPortalMap)) {
       const customer = data.customer;
       const currentState = customer.portal_config?.enabled || false;
       const desiredState = data.enabled;

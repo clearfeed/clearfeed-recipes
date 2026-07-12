@@ -159,7 +159,8 @@ The sheet format depends on the operational mode.
 - **Channel Name**, **Customer**, and **Enable Portal** are optional - used only for display and portal management
 - Empty rows will be ignored
 - Collection names are case-insensitive
-- **Enable Portal** column (optional): Use "Yes" to enable portal, "No" to disable, or leave blank to skip portal changes
+- **Customer column**: If left blank, the Channel ID is used to identify the customer
+- **Enable Portal** column: Use "Yes" to enable portal, "No" to disable, or leave blank to skip portal changes
 
 ## How to Find Channel IDs
 
@@ -193,7 +194,7 @@ The **Portal Update** feature allows you to bulk enable or disable customer port
 
 ### How It Works
 
-1. **Add Column E**: Add a header "Enable Portal" to column E (5th column)
+1. **Add a New Column**: Add a header "Enable Portal" to a new column in your sheet
 2. **Specify Values**: For each customer, enter one of the following:
    - **"Yes"** - Enable portal for this customer
    - **"No"** - Disable portal for this customer
@@ -241,12 +242,13 @@ SUMMARY:
 
 ### Key Features
 
-- **Deduplication**: If the same customer appears in multiple rows, the last occurrence wins
-- **Case-Insensitive Matching**: Customer names are matched case-insensitively
-- **Validation**: Checks that column 5 header contains "portal" before proceeding
+- **Smart Lookup**: Works with customer names or channel IDs - if the Customer column is blank, the feature uses the Channel ID to find the customer
+- **Deduplication**: If a customer appears in multiple rows, the last value is used
+- **Case-Insensitive Matching**: Customer names are matched regardless of capitalization
+- **Smart State Checking**: Compares current portal state with desired state - only updates customers that need changes
 - **Mode Gating**: Only works in Customer-Centric mode (`IS_ON_CUSTOMER_INBOX_MODEL = true`)
 - **Non-Interactive Mode**: Supports automatic execution when run via triggers
-- **Optimistic Locking**: Uses customer version field to prevent concurrent modification conflicts
+- **Safe by Default**: Shows a plan before making changes
 
 ### Use Cases
 
@@ -356,7 +358,10 @@ You can set up a time-based trigger to run the sync automatically:
 2. Click the clock icon (Triggers) in the left sidebar
 3. Click **+ Add Trigger**
 4. Configure:
-   - Function to run: `syncChannels` (legacy) or `syncCustomerCentricChanges` (customer-centric)
+   - Function to run:
+     - `syncChannels` (legacy mode)
+     - `syncCustomerCentricChanges` (customer-centric mode - channel sync)
+     - `syncPortalSettings` (customer-centric mode - portal update)
    - Event source: **Time-driven**
    - Type of time based trigger: **Hour timer** (or your preference)
    - Interval: **Every hour** (or your preference)
