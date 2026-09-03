@@ -52,7 +52,7 @@ Before you begin, make sure you have:
 ### Step 4: Add the Script
 
 1. In the Apps Script editor, delete any existing code in the default `Code.gs` file.
-2. Copy the entire contents of the `reassign_sync.gs` file.
+2. Copy the entire contents of the `unassigned_sync.gs` file.
 3. Paste it into the editor.
 4. Click **Save** (💾) or press `Ctrl+S` / `Cmd+S`.
 
@@ -63,7 +63,7 @@ At the top of the script is a `REASSIGN_CONFIG` section. Fill in the required va
 ```javascript
 const REASSIGN_CONFIG = {
   API_KEY: "",                          // Your ClearFeed API token
-  AUTOMATION_ID: 97,                    // Your reassignment automation ID (from Step 1)
+  AUTOMATION_ID: null,                  // Your reassignment automation ID (from Step 1)
   SHEET_NAME: "Unassigned Requests",    // Tab where results are written
   LOOKBACK_DAYS: 7,                     // How far back to look for unassigned requests
   COLLECTION_INCLUDE: [],               // Collection names to run for; empty = all
@@ -122,6 +122,7 @@ The ID of your ClearFeed reassignment automation (from Step 1). This tells the t
 
 ### LOOKBACK_DAYS
 How far back the tool looks for unassigned Open requests. Default is **7** days. Increase it to catch older unassigned requests; decrease it for faster runs.
+
 
 ### COLLECTION_INCLUDE
 Controls which Collections the tool runs for, **by name** (exactly as they appear in the ClearFeed web app):

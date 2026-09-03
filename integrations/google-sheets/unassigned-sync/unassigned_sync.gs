@@ -268,12 +268,16 @@ function fetchUnassignedForCollection(collectionId) {
     const data = JSON.parse(response.getContentText());
     const page = data.requests || [];
 
-    // Keep only unassigned requests. The API returns assignee as a user ID
-    // (string), or in some shapes as an object with .id — handle both.
+    // Keep only unassigned requests. A request counts as assigned if it has
+    // either an individual assignee OR an assigned team.
+    // The API returns assignee/assigned_team as an ID (string) or, in some
+    // shapes, as an object with .id — handle both.
     page.forEach(r => {
       const hasAssignee = r.assignee &&
         ((typeof r.assignee === 'object') ? !!r.assignee.id : true);
-      if (!hasAssignee) collected.push(r);
+      const hasTeam = r.assigned_team &&
+        ((typeof r.assigned_team === 'object') ? r.assigned_team.id != null : true);
+      if (!hasAssignee && !hasTeam) collected.push(r);
     });
 
     const meta = data.response_metadata || {};
@@ -329,6 +333,10 @@ function getCollectionNameToIdMap() {
 function triggerReassignForSheet(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return { success: 0, failed: 0 };
+
+  if (REASSIGN_CONFIG.AUTOMATION_ID == null || REASSIGN_CONFIG.AUTOMATION_ID === '') {
+    throw new Error('AUTOMATION_ID is not set. Add your reassignment automation ID to REASSIGN_CONFIG (see README Step 1).');
+  }
 
   const headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const idCol = headerRow.indexOf('id') + 1;
@@ -671,7 +679,7 @@ function writeRequestsToSheet(sheet, requests) {
     'Unassigned',
     (r.collection && (r.collection.name || r.collection.id)) || '',
     r.created_at || '',
-    r.url || ('https://web.clearfeed.app/requests/' + r.id),
+    (r.request_thread && r.request_thread.url) || r.url || ('https://web.clearfeed.app/requests/' + r.id),
     ''  // reassign_result
   ]));
 
@@ -701,7 +709,7 @@ function logMsg(level, message) {
     if (!logSheet) {
       logSheet = ss.insertSheet(REASSIGN_CONFIG.LOG_SHEET_NAME);
       logSheet.getRange(1, 1, 1, 3)
-        .setValues([['Timestamp (IST)', 'Level', 'Message']])
+        .setValues([[`Timestamp (${REASSIGN_CONFIG.TIMEZONE})`, 'Level', 'Message']])
         .setFontWeight('bold')
         .setBackground('#f0f0f0');
       logSheet.setFrozenRows(1);
