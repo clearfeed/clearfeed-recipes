@@ -25,7 +25,7 @@ const CONFIG = {
   BASE_DELAY_MS:         200,                  // Delay between API calls
   MAX_RETRIES:           5,                     // Retry attempts for failed requests
   MAX_UPDATES_PER_RUN:   500,                  // Maximum customers per sync
-  TRIGGER_FUNCTION:      "syncCustomFieldsFromSheet",
+  TRIGGER_FUNCTION:      "runScheduledSync",
   TRIGGER_INTERVAL_HR:   1,                     // Sync trigger interval (hours)
   PROGRESS_UPDATE_INTERVAL: 25,                // Show progress every N rows (for large datasets)
 
@@ -612,6 +612,14 @@ function testConnection() {
 // ══════════════════════════════════════════════
 // ENABLE PERIODIC SYNC TRIGGER
 // ══════════════════════════════════════════════
+
+/* Dedicated handler for the time-based trigger.
+   Forces a real sync so the event object passed by the trigger
+   can never be misread as a truthy dryRun flag. */
+
+function runScheduledSync() {
+  syncCustomFieldsFromSheet(false);
+}
 
 function enableHourlySync() {
   deleteExistingTriggers();
