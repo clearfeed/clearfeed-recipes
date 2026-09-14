@@ -151,13 +151,16 @@ The sheet format depends on the operational mode.
 | Customer | Customer name | No | Acme Corp |
 | Channel Name | Slack channel name (for display only) | No | #support-tickets |
 | Channel ID | Slack channel ID | Yes | C07AA9J9LJX |
+| Enable Portal | Enable/disable customer portal (optional) | No | Yes/No |
 
 **Important:**
 - The first row must contain headers
 - Only **Collection** and **Channel ID** are required
-- **Channel Name** and **Customer** are optional - used only for display
+- **Channel Name**, **Customer**, and **Enable Portal** are optional - used only for display and portal management
 - Empty rows will be ignored
 - Collection names are case-insensitive
+- **Customer column**: If left blank, the Channel ID is used to identify the customer
+- **Enable Portal** column: Use "Yes" to enable portal, "No" to disable, or leave blank to skip portal changes
 
 ## How to Find Channel IDs
 
@@ -181,8 +184,98 @@ The **ClearFeed Channel Sync** menu provides the following options:
 |--------|-------------|
 | Populate Initial Mappings | Fetches existing mappings from ClearFeed and populates the sheet |
 | Sync Channels | Reads the sheet, generates a plan, and syncs changes to ClearFeed |
+| Portal Update | Bulk enable/disable customer portal based on column E values (Customer-Centric mode only) |
 | Test Connection | Validates your API token and shows collection count |
 | View Logs | Instructions for viewing detailed logs |
+
+## Portal Update Feature (Customer-Centric Mode Only)
+
+The **Portal Update** feature allows you to bulk enable or disable customer portals directly from your Google Sheet. This feature is only available in Customer-Centric Inbox mode.
+
+### How It Works
+
+1. **Add a New Column**: Add a header "Enable Portal" to a new column in your sheet
+2. **Specify Values**: For each customer, enter one of the following:
+   - **"Yes"** - Enable portal for this customer
+   - **"No"** - Disable portal for this customer
+   - **Leave blank** - Skip this customer (no change)
+3. **Run Portal Update**: Click **ClearFeed Channel Sync** > **Portal Update**
+4. **Review Plan**: The script shows which customers will be enabled/disabled
+5. **Execute**: Confirm to apply the changes
+
+### Smart State Checking
+
+The Portal Update feature intelligently checks each customer's current portal state before making changes:
+
+- **Already enabled + "Yes"** → Skipped (shows as "No change needed")
+- **Already disabled + "No"** → Skipped (shows as "No change needed")
+- **Disabled + "Yes"** → Portal will be enabled
+- **Enabled + "No"** → Portal will be disabled
+
+This prevents unnecessary API calls and provides clear visibility into what will change.
+
+### Example Plan
+
+When you run "Portal Update", you'll see a plan like this:
+
+```
+PORTAL UPDATE PLAN
+===================
+
+✅ Portal will be ENABLED for 2 customer(s):
+   + Acme Corp (ID: 12345)
+   + Tech Inc (ID: 67890)
+
+🚫 Portal will be DISABLED for 1 customer(s):
+   - Old Company (ID: 11111)
+
+⏭️  No change needed for 3 customer(s) (already in desired state):
+   ✓ Beta Corp
+   ✓ Gamma Inc
+   ✓ Delta Ltd
+
+SUMMARY:
+  Enable: 2
+  Disable: 1
+  No change: 3 (already in desired state)
+```
+
+### Key Features
+
+- **Smart Lookup**: Works with customer names or channel IDs - if the Customer column is blank, the feature uses the Channel ID to find the customer
+- **Deduplication**: If a customer appears in multiple rows, the last value is used
+- **Conflict Detection**: Warns when the same customer has conflicting portal values in different rows (last occurrence wins)
+- **Case-Insensitive Matching**: Customer names are matched regardless of capitalization
+- **Smart State Checking**: Compares current portal state with desired state - only updates customers that need changes
+- **Mode Gating**: Only works in Customer-Centric mode (`IS_ON_CUSTOMER_INBOX_MODEL = true`)
+- **Non-Interactive Mode**: Supports automatic execution when run via triggers
+- **Safe by Default**: Shows a plan before making changes
+
+### Use Cases
+
+#### 1. Enable Portals for New Customers
+```
+Collection | Customer      | Channel Name | Channel ID | Enable Portal
+Support    | Acme Corp     | #support     | C123...   | Yes
+Sales      | Tech Inc      | #sales       | C456...   | Yes
+```
+
+#### 2. Disable Portals for Churned Customers
+```
+Collection | Customer      | Channel Name | Channel ID | Enable Portal
+Support    | Old Company   | #legacy      | C789...   | No
+```
+
+#### 3. Mixed Operations
+```
+Collection | Customer      | Channel Name | Channel ID | Enable Portal
+Support    | Acme Corp     | #support     | C123...   | Yes
+Sales      | Tech Inc      | #sales       | C456...   | Yes
+Support    | Old Company   | #legacy      | C789...   | No
+Archive    | Inactive Inc  | #archive     | C012...   |
+```
+
+In this example, Acme Corp and Tech Inc will have portals enabled, Old Company will have portal disabled, and Inactive Inc will be skipped (blank value).
 
 ## Understanding the Sync Plan
 
@@ -266,7 +359,10 @@ You can set up a time-based trigger to run the sync automatically:
 2. Click the clock icon (Triggers) in the left sidebar
 3. Click **+ Add Trigger**
 4. Configure:
-   - Function to run: `syncChannels` (legacy) or `syncCustomerCentricChanges` (customer-centric)
+   - Function to run:
+     - `syncChannels` (legacy mode)
+     - `syncCustomerCentricChanges` (customer-centric mode - channel sync)
+     - `syncPortalSettings` (customer-centric mode - portal update)
    - Event source: **Time-driven**
    - Type of time based trigger: **Hour timer** (or your preference)
    - Interval: **Every hour** (or your preference)
