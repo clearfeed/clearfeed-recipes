@@ -1,6 +1,6 @@
-# ClearFeed Auto-Reassignment for Unassigned Requests
+# ClearFeed Auto-Reassignment
 
-Automatically pick up ClearFeed requests that are still **Open and unassigned** and run them back through your Collection's assignment rules (rotation / round-robin) so they get assigned to an available agent.
+Automatically pick up **Open** ClearFeed requests — by default only the **unassigned** ones, or all of them with `UNASSIGNED_ONLY: false` — and run them back through your Collection's assignment rules (rotation / round-robin) so they get assigned to an available agent.
 
 This is useful when requests arrive **outside working hours** or when no one is on shift: instead of sitting unassigned indefinitely, they are retried on a schedule and get assigned as soon as an eligible agent is available.
 
@@ -10,12 +10,14 @@ The script runs from a Google Sheet. You can trigger it manually from a menu, or
 
 Each run (manual or scheduled) does the following, in order:
 
-1. **Finds** requests that are **Open** with **no assignee and no assigned team**, created within the last `LOOKBACK_DAYS` days (optionally limited to specific Collections), and writes them to the results tab.
-2. **Reassigns** each one by triggering your ClearFeed reassignment automation — ClearFeed itself decides who the request goes to, using your existing rotation / round-robin rules. Rows that already have an assignee are skipped. If the first few calls all fail (see `ABORT_IF_FIRST_N_FAIL`), the run stops.
+1. **Finds** **Open** requests created within the last `LOOKBACK_DAYS` days (optionally limited to specific Collections) and writes them to the results tab. With `UNASSIGNED_ONLY: true` (the default) only requests with **no assignee and no assigned team** are included; with `false` **all** Open requests are.
+2. **Reassigns** each one by triggering your ClearFeed reassignment automation — ClearFeed itself decides who the request goes to, using your existing rotation / round-robin rules. With `UNASSIGNED_ONLY: true`, rows that already have an assignee are skipped. If the first few calls all fail (see `ABORT_IF_FIRST_N_FAIL`), the run stops.
 3. **Updates** the `assignee` column. The automation runs asynchronously, so the tool waits a few seconds (`REFRESH_SETTLE_MS`) and then re-reads each request from ClearFeed.
 4. **Emails you** (if `EMAIL_CONFIG.TO` is set) when any reassignment call failed.
 
 > **Important:** The tool does not choose who gets a request. It simply asks ClearFeed to re-run assignment. If no agent is currently available (outside business hours, everyone away, or an empty rotation), nothing will be assigned on that run — the requests stay unassigned and are picked up on the next run when an agent is available. This is expected behaviour.
+
+> **Heads-up on `UNASSIGNED_ONLY`:** by default (`true`) only requests nobody has taken are reassigned. If you set it to `false`, every Open request in scope is re-run through assignment on every run — including ones that already have an assignee, which may be moved to a different agent and will advance your rotation.
 
 > **Note:** Only requests **created** within the last `LOOKBACK_DAYS` days are considered. An Open, unassigned request older than that is not picked up — increase `LOOKBACK_DAYS` if you need to catch older ones.
 
@@ -71,6 +73,7 @@ const CONFIG = {
   AUTOMATION_ID: null,                  // Your reassignment automation ID (from Step 1)
   SHEET_NAME: "Reassignment Results",   // Tab where the latest run's results are written
   LOOKBACK_DAYS: 7,                     // Only requests created in the last N days are considered
+  UNASSIGNED_ONLY: true,                // true = only unassigned Open requests; false = ALL Open requests
   COLLECTION_INCLUDE: [],               // Collection names to run for; empty = all
   REASSIGN_DELAY_MS: 1000,              // Delay between calls (ms)
   ABORT_IF_FIRST_N_FAIL: 5,             // Stop the run if the first N webhook calls all fail (0 = disabled)
@@ -117,9 +120,9 @@ If you later set `EMAIL_CONFIG.TO`, Google will ask you to approve an additional
 
 Once set up, the **"ClearFeed Reassign"** menu gives you:
 
-- **▶️ Run Now** — the full run: fetches the current unassigned requests (overwriting the results tab), reassigns them, and updates the assignees. Same as a scheduled run. Best for testing.
-- **📥 Preview Unassigned Requests** — fetches the current unassigned requests into the results tab (overwriting it) **without reassigning anything**. Use it to see what a run would pick up.
-- **🔁 Reassign Unassigned Requests** — reassigns the requests **already listed in the results tab**, without fetching again, and then refreshes the assignees. Rows that already have an assignee are skipped and marked `SKIPPED (already assigned)`, so it is safe to run more than once. It trusts what the tab currently shows, so if the tab is old, run **Preview** or **Refresh Assignees** first. It does not send failure emails.
+- **▶️ Run Now** — the full run: fetches the current requests in scope (see `UNASSIGNED_ONLY`) (overwriting the results tab), reassigns them, and updates the assignees. Same as a scheduled run. Best for testing.
+- **📥 Preview Requests** — fetches the requests a run would pick up (unassigned only, or all Open — see `UNASSIGNED_ONLY`) into the results tab (overwriting it) **without reassigning anything**. Use it to see what a run would pick up.
+- **🔁 Reassign Listed Requests** — reassigns the requests **already listed in the results tab**, without fetching again, and then refreshes the assignees. With `UNASSIGNED_ONLY: true`, rows that already have an assignee are skipped and marked `SKIPPED (already assigned)`, so it is safe to run more than once. With `false`, every listed row is reassigned each time. It trusts what the tab currently shows, so if the tab is old, run **Preview** or **Refresh Assignees** first. It does not send failure emails.
 - **🔃 Refresh Assignees** — re-reads each listed request from ClearFeed and updates the `assignee` column, without reassigning (useful if an assignment was still completing when the tab last updated).
 - **⏰ Enable Scheduled Runs** — turns on automatic runs every `SYNC_INTERVAL_HOURS` hours.
 - **⏹️ Disable Scheduled Runs** — turns off automatic runs.
@@ -132,13 +135,13 @@ The tab named by `SHEET_NAME` (default **Reassignment Results**) is created auto
 
 - It is **cleared and rewritten** by every **Run Now**, every scheduled run, and every **Preview**. Don't keep notes or extra columns there — they will be wiped.
 - Each row is one request found by that run: `id`, `title`, `state`, `assignee`, `collection`, `created_at`, `url`, `reassign_result`.
-- `assignee` starts as "Unassigned" and is updated after the run to the agent's name (or `Team: <name>`). Requests nobody was available to take still show "Unassigned".
+- `assignee` shows who the request is assigned to when it is fetched ("Unassigned" if nobody), and is updated after the run to the agent's name (or `Team: <name>`). Requests nobody was available to take still show "Unassigned".
 - `reassign_result` shows the outcome for each request:
   - `OK (200)` — the reassign call was accepted (this does not by itself mean someone was assigned — see the `assignee` column).
   - `FAIL (<code>): …` or `ERROR: …` — the call failed.
-  - `SKIPPED (already assigned)` — the row already had an assignee when **Reassign Unassigned Requests** was run.
+  - `SKIPPED (already assigned)` — only with `UNASSIGNED_ONLY: true`: the row already had an assignee when **Reassign Listed Requests** was run.
   - `SKIPPED (aborted after repeated failures)` — the run stopped early (see `ABORT_IF_FIRST_N_FAIL`).
-- If a run finds nothing, the tab shows only the header and a note saying no unassigned Open requests were found.
+- If a run finds nothing, the tab shows only the header and a note saying no requests were found.
 
 The separate **Logs** tab keeps a running history across runs (trimmed to `LOG_MAX_ROWS`) and is only cleared by **Clear Logs**.
 
@@ -152,6 +155,14 @@ The ID of your ClearFeed reassignment automation (from Step 1). This tells the t
 
 ### LOOKBACK_DAYS
 Only requests **created** within this many days are considered (it is based on creation date, not on how long a request has been unassigned). Default is **7** days. Increase it to catch older unassigned requests; decrease it for faster runs.
+
+### UNASSIGNED_ONLY
+Controls which Open requests get reassigned:
+
+- **`true` (default)** — only requests with **no assignee and no assigned team** are fetched, and rows that already have an assignee are skipped by **🔁 Reassign Listed Requests**. Use this to only catch requests nobody has picked up.
+- **`false`** — **all** Open requests in scope are fetched and sent to the reassignment automation, including ones that already have an assignee or team. ClearFeed re-runs assignment for them, so they may move to a different agent and your rotation advances. A scheduled run repeats this every `SYNC_INTERVAL_HOURS` hours.
+
+The **📥 Preview Requests** and **🔁 Reassign Listed Requests** menu items follow this setting. Note that in `false` mode the "nothing was assigned" warning in the Logs is not raised, since rows may already have had an assignee.
 
 ### COLLECTION_INCLUDE
 Controls which Collections the tool runs for, **by name** (exactly as they appear in the ClearFeed web app):
@@ -180,7 +191,7 @@ Used for timestamps in the Logs tab and in alert emails. Set it to your local ti
 Set `EMAIL_CONFIG.TO` to an email address to get an alert after any run in which **at least one reassignment call failed**. Runs with no failures send nothing. Leave `TO` empty to disable emails.
 
 - The email lists the number of requests found, succeeded and failed, each failed request with its error, and (if the run was aborted) how many requests were not attempted.
-- It is sent for **▶️ Run Now** and scheduled runs, but not for **🔁 Reassign Unassigned Requests**.
+- It is sent for **▶️ Run Now** and scheduled runs, but not for **🔁 Reassign Listed Requests**.
 - `FROM` must be one of your own Gmail "send as" aliases. If it isn't, the email is still sent, but from your own address.
 - The first time an email is sent, Google will ask you to approve email-sending permission.
 - A request that was accepted but left unassigned (no agent available) is not a failure and does not trigger an email.
@@ -210,8 +221,8 @@ If you change `SYNC_INTERVAL_HOURS`, click **⏹️ Disable Scheduled Runs** and
 ### Q: Can I run this for only some of my Collections?
 **A:** Yes. Put the Collection names in `COLLECTION_INCLUDE` (see above). Leave it empty to run for all.
 
-### Q: Is it safe to click Reassign Unassigned Requests more than once?
-**A:** Yes. It works from the rows in the results tab and skips any that already have an assignee. Just note it does not re-fetch, so it can act on stale rows; run **Preview** or **Refresh Assignees** first if the tab is old.
+### Q: Is it safe to click Reassign Listed Requests more than once?
+**A:** Only with `UNASSIGNED_ONLY: true`: then it works from the rows in the results tab and skips any that already have an assignee. With `false`, it re-POSTs every listed row each time, which can move already-assigned requests. Just note it does not re-fetch, so it can act on stale rows; run **Preview** or **Refresh Assignees** first if the tab is old.
 
 ### Q: Why did my results tab change / lose my edits?
 **A:** The results tab is cleared and rewritten on every run and every Preview. It shows only the latest run — use the **Logs** tab for history.
@@ -246,10 +257,10 @@ If you change `SYNC_INTERVAL_HOURS`, click **⏹️ Disable Scheduled Runs** and
 - The first calls all failed, so the run stopped instead of trying every request. Check the Logs tab and the `reassign_result` column for the error (e.g. 401/403 = bad `API_KEY`; 404 = wrong `AUTOMATION_ID`). The remaining rows are marked `SKIPPED (aborted after repeated failures)`.
 
 **Rows say "SKIPPED (already assigned)"**
-- Those rows already had an assignee when **Reassign Unassigned Requests** ran, so they were left alone. This is expected.
+- With `UNASSIGNED_ONLY: true`, those rows already had an assignee when **Reassign Listed Requests** ran, so they were left alone. This is expected.
 
 **I'm not getting failure emails**
-- Make sure `EMAIL_CONFIG.TO` is set, and that you approved the email permission. Emails are only sent when at least one call failed, and not for **Reassign Unassigned Requests**.
+- Make sure `EMAIL_CONFIG.TO` is set, and that you approved the email permission. Emails are only sent when at least one call failed, and not for **Reassign Listed Requests**.
 - Check the Logs tab for "Failure email skipped" or "Failed to send failure email".
 
 **Permission errors**

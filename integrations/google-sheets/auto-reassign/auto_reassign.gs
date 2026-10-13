@@ -1,18 +1,20 @@
 // ============================================================
-// ClearFeed — Auto-Reassign Unassigned Requests
+// ClearFeed — Auto-Reassign Requests
 // ------------------------------------------------------------
 // Companion to request_sync.gs. Reuses the same ClearFeed API
 // auth/endpoint/pagination patterns. Must be container-bound
 // (opened via Extensions → Apps Script from the Google Sheet).
 //
 // What a run does:
-//   1. Fetches Open requests with no assignee and no assigned team
-//      (created in the last LOOKBACK_DAYS days), optionally limited
-//      to COLLECTION_INCLUDE, and writes them to the results tab.
+//   1. Fetches Open requests created in the last LOOKBACK_DAYS days
+//      (only those with no assignee and no assigned team when
+//      UNASSIGNED_ONLY is true; ALL Open requests when false),
+//      optionally limited to COLLECTION_INCLUDE, and writes them to
+//      the results tab.
 //   2. Fires the "Reassign" automation webhook for each request ID,
 //      so ClearFeed's own assignment engine (rotation / round-robin)
 //      re-runs and assigns each request to a currently-eligible agent.
-//      Rows that already have an assignee are skipped. If the first
+//      With UNASSIGNED_ONLY, rows that already have an assignee are skipped. If the first
 //      ABORT_IF_FIRST_N_FAIL calls all fail, the run stops.
 //   3. Waits for the (asynchronous) automation, then re-reads each
 //      request and updates the "assignee" column.
@@ -22,12 +24,12 @@
 // Run Now / scheduled run / Preview, so it shows only the latest run.
 //
 // Menu actions:
-//   ▶️ Run Now                        — steps 1–4 in one pass
-//   📥 Preview Unassigned Requests    — step 1 only (populate the tab)
-//   🔁 Reassign Unassigned Requests   — steps 2–3 for the IDs already in the tab
-//   🔃 Refresh Assignees              — step 3 only
-//   ⏰ Enable Scheduled Runs          — run reassignSyncNow() every SYNC_INTERVAL_HOURS
-//   ⏹️ Disable Scheduled Runs         — remove the recurring trigger
+//   ▶️ Run Now                       — steps 1–4 in one pass
+//   📥 Preview Requests              — step 1 only (populate the tab)
+//   🔁 Reassign Listed Requests      — steps 2–3 for the IDs already in the tab
+//   🔃 Refresh Assignees             — step 3 only
+//   ⏰ Enable Scheduled Runs         — run reassignSyncNow() every SYNC_INTERVAL_HOURS
+//   ⏹️ Disable Scheduled Runs        — remove the recurring trigger
 //   📋 View Logs / 🧹 Clear Logs      — in-sheet run log
 // ============================================================
 
@@ -36,7 +38,11 @@ const CONFIG = {
   API_KEY: "",                          // ClearFeed API key (same as request_sync)
   AUTOMATION_ID: null,                  // Reassign automation ID (from the webhook trigger URL)
   SHEET_NAME: "Reassignment Results",   // Tab this helper reads/writes
-  LOOKBACK_DAYS: 7,                     // How far back to look for unassigned Open requests
+  LOOKBACK_DAYS: 7,                     // How far back to look for Open requests (by creation date)
+  // true  = only Open requests with no assignee and no assigned team are reassigned.
+  // false = ALL Open requests are reassigned, including ones that already have an assignee
+  //         (ClearFeed re-runs assignment, so they may move to a different agent).
+  UNASSIGNED_ONLY: true,
   // Collections to run for, BY NAME (as shown in the ClearFeed web app).
   // Empty array = run for ALL collections.
   // e.g. ["Enterprise Support", "Premium Customers"] runs only those two.
@@ -59,6 +65,11 @@ const EMAIL_CONFIG = {
   SUBJECT_PREFIX: "ClearFeed Auto-Reassign - ", // Prefix for email subject lines
   SENDER_NAME: "ClearFeed Auto-Reassign"        // Display name for email sender
 };
+
+// Wording helper for logs/alerts: what this run is targeting.
+function scopeWord_() {
+  return CONFIG.UNASSIGNED_ONLY ? 'unassigned Open' : 'Open';
+}
 
 const REQUESTS_URL = "https://api.clearfeed.app/v1/rest/requests";
 const USERS_URL = "https://api.clearfeed.app/v1/rest/users";
@@ -84,7 +95,7 @@ function reassignSyncNow() {
 
     // --- Fetch phase ---
     const requests = fetchOpenUnassignedRequests();
-    logMsg('INFO', `Found ${requests.length} unassigned Open request(s)`);
+    logMsg('INFO', `Found ${requests.length} ${scopeWord_()} request(s)`);
 
     writeRequestsToSheet(sheet, requests);
 
@@ -118,7 +129,7 @@ function reassignSyncNowMenu() {
     const r = reassignSyncNow();
     SpreadsheetApp.getUi().alert(
       `Reassignment Run Complete\n\n` +
-      `Total unassigned: ${r.total}\n` +
+      `Total requests: ${r.total}\n` +
       `Success: ${r.success}\n` +
       `Failed: ${r.failed}`
     );
@@ -129,20 +140,20 @@ function reassignSyncNowMenu() {
 }
 
 /**
- * MENU: "Preview Unassigned Requests" — populates the sheet only.
+ * MENU: "Preview Requests" — populates the sheet only.
  */
 function fetchUnassignedRequests() {
   try {
     const sheet = getOrCreateReassignSheet();
     const requests = fetchOpenUnassignedRequests();
-    Logger.log(`Fetched ${requests.length} unassigned Open requests`);
+    Logger.log(`Fetched ${requests.length} ${scopeWord_()} requests`);
 
     writeRequestsToSheet(sheet, requests);
 
     if (requests.length === 0) {
-      SpreadsheetApp.getUi().alert('No unassigned Open requests found.');
+      SpreadsheetApp.getUi().alert(`No ${scopeWord_()} requests found.`);
     } else {
-      SpreadsheetApp.getUi().alert(`Fetched ${requests.length} unassigned Open request(s).`);
+      SpreadsheetApp.getUi().alert(`Fetched ${requests.length} ${scopeWord_()} request(s).`);
     }
   } catch (error) {
     Logger.log(`fetchUnassignedRequests error: ${error.toString()}`);
@@ -160,7 +171,7 @@ function refreshAssigneesMenu() {
   try {
     const sheet = getOrCreateReassignSheet();
     if (sheet.getLastRow() < 2) {
-      ui.alert('No requests in the sheet. Run Preview Unassigned Requests or Run Now first.');
+      ui.alert('No requests in the sheet. Run Preview Requests or Run Now first.');
       return;
     }
     refreshAssignees(sheet);
@@ -172,19 +183,19 @@ function refreshAssigneesMenu() {
 }
 
 /**
- * MENU: "Reassign Unassigned Requests" — reassigns request IDs already in the sheet.
+ * MENU: "Reassign Listed Requests" — reassigns request IDs already in the sheet.
  */
 function reassignRequests() {
   const ui = SpreadsheetApp.getUi();
   try {
     const sheet = getOrCreateReassignSheet();
     if (sheet.getLastRow() < 2) {
-      ui.alert('No requests to reassign. Run "Preview Unassigned Requests" first.');
+      ui.alert('No requests to reassign. Run "Preview Requests" first.');
       return;
     }
     const summary = triggerReassignForSheet(sheet);
     if (summary.success + summary.failed + summary.alreadyAssigned === 0) {
-      ui.alert('No requests to reassign. Run "Preview Unassigned Requests" first.');
+      ui.alert('No requests to reassign. Run "Preview Requests" first.');
       return;
     }
     ui.alert(`Reassignment done. Success: ${summary.success}, Failed: ${summary.failed}` +
@@ -239,13 +250,13 @@ function fetchOpenUnassignedRequests() {
   // Fetch per collection using the server-side collection_id filter.
   let all = [];
   collectionIds.forEach(c => {
-    logMsg('INFO', `Fetching unassigned Open requests for collection "${c.name}" (id ${c.id})`);
+    logMsg('INFO', `Fetching ${scopeWord_()} requests for collection "${c.name}" (id ${c.id})`);
     const forThis = fetchUnassignedForCollection(c.id);
-    logMsg('INFO', `  → ${forThis.length} unassigned in "${c.name}"`);
+    logMsg('INFO', `  → ${forThis.length} request(s) in "${c.name}"`);
     all = all.concat(forThis);
   });
 
-  logMsg('INFO', `Total unassigned Open requests across ${collectionIds.length} collection(s): ${all.length}`);
+  logMsg('INFO', `Total ${scopeWord_()} requests across ${collectionIds.length} collection(s): ${all.length}`);
   return all;
 }
 
@@ -293,7 +304,8 @@ function fetchUnassignedForCollection(collectionId) {
     const data = JSON.parse(response.getContentText());
     const page = data.requests || [];
 
-    // Keep only unassigned requests. A request counts as assigned if it has
+    // If UNASSIGNED_ONLY, keep only unassigned requests; otherwise keep all
+    // Open requests. A request counts as assigned if it has
     // either an individual assignee OR an assigned team.
     // The API returns assignee/assigned_team as an ID (string) or, in some
     // shapes, as an object with .id — handle both.
@@ -302,7 +314,7 @@ function fetchUnassignedForCollection(collectionId) {
         ((typeof r.assignee === 'object') ? !!r.assignee.id : true);
       const hasTeam = r.assigned_team &&
         ((typeof r.assigned_team === 'object') ? r.assigned_team.id != null : true);
-      if (!hasAssignee && !hasTeam) collected.push(r);
+      if (!CONFIG.UNASSIGNED_ONLY || (!hasAssignee && !hasTeam)) collected.push(r);
     });
 
     const meta = data.response_metadata || {};
@@ -390,9 +402,9 @@ function triggerReassignForSheet(sheet) {
     const requestId = ids[i][0];
     if (!requestId) continue;
 
-    // Don't re-POST requests that already have an assignee — reassigning
-    // them could move them to another agent.
-    if (assignees && assignees[i][0] && assignees[i][0] !== 'Unassigned') {
+    // UNASSIGNED_ONLY: don't re-POST requests that already have an assignee —
+    // reassigning them could move them to another agent.
+    if (CONFIG.UNASSIGNED_ONLY && assignees && assignees[i][0] && assignees[i][0] !== 'Unassigned') {
       sheet.getRange(i + 2, resultCol).setValue('SKIPPED (already assigned)');
       alreadyAssigned++;
       continue;
@@ -458,7 +470,8 @@ function triggerReassignForSheet(sheet) {
     // agent" case — the business schedule window is closed, everyone is
     // marked unavailable in Slack, or the rotation is empty. The requests
     // stay held and will be retried on the next run inside an active shift.
-    if (refresh && refresh.total > 0 && refresh.updated === 0) {
+    // (Only meaningful when UNASSIGNED_ONLY: otherwise rows may already have had an assignee.)
+    if (CONFIG.UNASSIGNED_ONLY && refresh && refresh.total > 0 && refresh.updated === 0) {
       logMsg('WARN',
         `No requests were assigned despite ${success} accepted trigger(s). ` +
         `Likely no agent is currently on-shift/available (business schedule closed, ` +
@@ -468,6 +481,28 @@ function triggerReassignForSheet(sheet) {
   }
 
   return { success: success, failed: failed, skipped: skipped, alreadyAssigned: alreadyAssigned, failures: failures };
+}
+
+/**
+ * Work out who a request is assigned to. The requests API returns assignee /
+ * assigned_team as an ID (string) or, in some shapes, an object with .id —
+ * handle both. User IDs are resolved to names via the Users API (cached).
+ *
+ * @returns {{assigned:boolean, label:string}} label is a name, "Team: …", or "Unassigned"
+ */
+function describeAssignee_(req) {
+  let assigneeId = null;
+  if (req.assignee) {
+    assigneeId = (typeof req.assignee === 'object') ? req.assignee.id : req.assignee;
+  }
+  if (assigneeId) return { assigned: true, label: getUserName(assigneeId) };
+
+  if (req.assigned_team) {
+    const teamId = (typeof req.assigned_team === 'object') ? req.assigned_team.id : req.assigned_team;
+    const teamName = (typeof req.assigned_team === 'object' && req.assigned_team.name) ? req.assigned_team.name : teamId;
+    return { assigned: true, label: 'Team: ' + teamName };
+  }
+  return { assigned: false, label: 'Unassigned' };
 }
 
 /**
@@ -509,24 +544,9 @@ function refreshAssignees(sheet) {
         // Single-request endpoint shape may wrap in .request; fall back to the object itself.
         const req = data.request || data;
 
-        // The requests API returns the assignee as a user ID (string), or in
-        // some shapes as an object. Normalize to an ID, then resolve to a name
-        // via the Users API (same approach as request_sync.gs).
-        let assigneeId = null;
-        if (req.assignee) {
-          assigneeId = (typeof req.assignee === 'object') ? req.assignee.id : req.assignee;
-        }
-
-        let assigneeLabel = 'Unassigned';
-        if (assigneeId) {
-          assigneeLabel = getUserName(assigneeId);   // ID -> display name
-          updated++;
-        } else if (req.assigned_team) {
-          const teamId = (typeof req.assigned_team === 'object') ? req.assigned_team.id : req.assigned_team;
-          const teamName = (typeof req.assigned_team === 'object' && req.assigned_team.name) ? req.assigned_team.name : teamId;
-          assigneeLabel = 'Team: ' + teamName;
-          updated++;
-        }
+        const d = describeAssignee_(req);
+        const assigneeLabel = d.label;
+        if (d.assigned) updated++;
         sheet.getRange(i + 2, assigneeCol).setValue(assigneeLabel);
       } else {
         logMsg('WARN', `refreshAssignees: HTTP ${response.getResponseCode()} for request ${requestId}`);
@@ -709,7 +729,7 @@ function writeRequestsToSheet(sheet, requests) {
   if (!requests || requests.length === 0) {
     // Put the note in the "title" column, NOT "id": reassign/refresh read the
     // id column and must not mistake the message for a request ID.
-    sheet.getRange(2, 2).setValue(`No unassigned Open requests in the last ${CONFIG.LOOKBACK_DAYS} days.`)
+    sheet.getRange(2, 2).setValue(`No ${scopeWord_()} requests in the last ${CONFIG.LOOKBACK_DAYS} days.`)
       .setFontStyle('italic').setFontColor('#666666');
     return;
   }
@@ -718,7 +738,7 @@ function writeRequestsToSheet(sheet, requests) {
     r.id,
     r.title || r.subject || '',
     r.state || '',
-    'Unassigned',
+    describeAssignee_(r).label,
     (r.collection && (r.collection.name || r.collection.id)) || '',
     r.created_at || '',
     (r.request_thread && r.request_thread.url) || r.url || ('https://web.clearfeed.app/requests/' + r.id),
@@ -727,6 +747,7 @@ function writeRequestsToSheet(sheet, requests) {
 
   sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
   sheet.autoResizeColumns(1, headers.length);
+  saveUserCache();   // persist any assignee names resolved above
 }
 
 // ============================================================
@@ -750,7 +771,7 @@ function sendFailureEmail_(total, summary) {
   const bodyLines = [
     'Auto-reassign run completed with failures:',
     '',
-    `Unassigned requests found: ${total}`,
+    `Requests found: ${total}`,
     `Reassign calls succeeded: ${summary.success}`,
     `Reassign calls failed: ${summary.failed}`
   ];
@@ -883,8 +904,8 @@ function onOpen() {
   ui.createMenu('ClearFeed Reassign')
     .addItem('▶️ Run Now', 'reassignSyncNowMenu')
     .addSeparator()
-    .addItem('📥 Preview Unassigned Requests', 'fetchUnassignedRequests')
-    .addItem('🔁 Reassign Unassigned Requests', 'reassignRequests')
+    .addItem('📥 Preview Requests', 'fetchUnassignedRequests')
+    .addItem('🔁 Reassign Listed Requests', 'reassignRequests')
     .addItem('🔃 Refresh Assignees', 'refreshAssigneesMenu')
     .addSeparator()
     .addItem('⏰ Enable Scheduled Runs', 'enableIntervalTrigger')
