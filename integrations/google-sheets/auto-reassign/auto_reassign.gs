@@ -1,35 +1,48 @@
 // ============================================================
-// ClearFeed — Unassigned Request Reassignment Helper
+// ClearFeed — Auto-Reassign Unassigned Requests
 // ------------------------------------------------------------
 // Companion to request_sync.gs. Reuses the same ClearFeed API
-// auth/endpoint/pagination patterns.
+// auth/endpoint/pagination patterns. Must be container-bound
+// (opened via Extensions → Apps Script from the Google Sheet).
 //
-// What it does:
-//   1. Fetches Open + unassigned requests (last N days) into a sheet.
+// What a run does:
+//   1. Fetches Open requests with no assignee and no assigned team
+//      (created in the last LOOKBACK_DAYS days), optionally limited
+//      to COLLECTION_INCLUDE, and writes them to the results tab.
 //   2. Fires the "Reassign" automation webhook for each request ID,
 //      so ClearFeed's own assignment engine (rotation / round-robin)
-//      re-runs and assigns each ticket to a currently-eligible agent.
+//      re-runs and assigns each request to a currently-eligible agent.
+//      Rows that already have an assignee are skipped. If the first
+//      ABORT_IF_FIRST_N_FAIL calls all fail, the run stops.
+//   3. Waits for the (asynchronous) automation, then re-reads each
+//      request and updates the "assignee" column.
+//   4. Emails EMAIL_CONFIG.TO if any webhook call failed.
+//
+// The results tab (SHEET_NAME) is cleared and rewritten by every
+// Run Now / scheduled run / Preview, so it shows only the latest run.
 //
 // Menu actions:
-//   🔄 Sync Now                 — fetch + reassign in one pass
-//   📥 Fetch Unassigned Requests — fetch only (populate sheet)
-//   🔁 Reassign Requests         — reassign the IDs already in the sheet
-//   ⏰ Enable Auto Sync          — schedule reassignSyncNow() every X hours
-//   ⏹️ Disable Auto Sync         — remove the recurring trigger
-//   ♻️ Reset Sync                — clear the last-run timestamp
+//   ▶️ Run Now                        — steps 1–4 in one pass
+//   📥 Preview Unassigned Requests    — step 1 only (populate the tab)
+//   🔁 Reassign Unassigned Requests   — steps 2–3 for the IDs already in the tab
+//   🔃 Refresh Assignees              — step 3 only
+//   ⏰ Enable Scheduled Runs          — run reassignSyncNow() every SYNC_INTERVAL_HOURS
+//   ⏹️ Disable Scheduled Runs         — remove the recurring trigger
+//   📋 View Logs / 🧹 Clear Logs      — in-sheet run log
 // ============================================================
 
 // ---------------------- CONFIG ------------------------------
-const REASSIGN_CONFIG = {
+const CONFIG = {
   API_KEY: "",                          // ClearFeed API key (same as request_sync)
-  AUTOMATION_ID: 97,                    // Reassign automation ID (from the webhook trigger URL)
-  SHEET_NAME: "Unassigned Requests",    // Tab this helper reads/writes
+  AUTOMATION_ID: null,                  // Reassign automation ID (from the webhook trigger URL)
+  SHEET_NAME: "Reassignment Results",   // Tab this helper reads/writes
   LOOKBACK_DAYS: 7,                     // How far back to look for unassigned Open requests
   // Collections to run for, BY NAME (as shown in the ClearFeed web app).
   // Empty array = run for ALL collections.
   // e.g. ["Enterprise Support", "Premium Customers"] runs only those two.
   COLLECTION_INCLUDE: [],
   REASSIGN_DELAY_MS: 1000,              // Delay between webhook calls (ms)
+  ABORT_IF_FIRST_N_FAIL: 5,             // Stop the run if the first N webhook calls all fail (bad API key / automation ID, outage). 0 = disabled
   REFRESH_SETTLE_MS: 3000,              // Wait after reassigning before reading back assignees (automation is async)
   REFRESH_DELAY_MS: 300,                // Delay between per-request re-fetch calls (ms)
   SYNC_INTERVAL_HOURS: 4,               // Run every X hours. Allowed: 1, 2, 4, 6, 8, 12 (Apps Script limit)
@@ -38,25 +51,33 @@ const REASSIGN_CONFIG = {
   LOG_MAX_ROWS: 500                     // Trim the log tab to this many recent entries
 };
 
+// ---------------------- EMAIL ALERTS ------------------------
+// An alert is sent for any run in which at least one reassign POST call failed.
+const EMAIL_CONFIG = {
+  TO: "",                                       // Recipient for failure alerts (leave empty to disable emails)
+  FROM: "noreply@example.com",                  // Sender address (must be configured as an alias in Gmail)
+  SUBJECT_PREFIX: "ClearFeed Auto-Reassign - ", // Prefix for email subject lines
+  SENDER_NAME: "ClearFeed Auto-Reassign"        // Display name for email sender
+};
+
 const REQUESTS_URL = "https://api.clearfeed.app/v1/rest/requests";
 const USERS_URL = "https://api.clearfeed.app/v1/rest/users";
 const COLLECTIONS_URL = "https://api.clearfeed.app/v1/rest/collections";
 const TRIGGER_URL_BASE = "https://web.clearfeed.app/api/v1/rest/automations";
-const LAST_REASSIGN_PROPERTY = "LAST_REASSIGN_PROPERTY";
 
 // ============================================================
 // CORE WORKER
 // ============================================================
 
 /**
- * "Sync Now" worker — fetches unassigned Open requests and reassigns
+ * "Run Now" worker — fetches unassigned Open requests and reassigns
  * them in a single pass. UI-FREE so a time-based trigger can call it
  * directly (mirrors syncClearfeedRequests() in request_sync.gs).
  *
  * @returns {{total:number, success:number, failed:number}} summary
  */
 function reassignSyncNow() {
-  logMsg('INFO', 'Starting reassignment sync...');
+  logMsg('INFO', 'Starting reassignment run...');
 
   try {
     const sheet = getOrCreateReassignSheet();
@@ -68,7 +89,6 @@ function reassignSyncNow() {
     writeRequestsToSheet(sheet, requests);
 
     if (requests.length === 0) {
-      setLastReassignTime(new Date().toISOString());
       logMsg('INFO', 'Nothing to reassign.');
       return { total: 0, success: 0, failed: 0 };
     }
@@ -76,8 +96,8 @@ function reassignSyncNow() {
     // --- Reassign phase ---
     const summary = triggerReassignForSheet(sheet);
 
-    setLastReassignTime(new Date().toISOString());
-    logMsg('INFO', `Reassignment sync complete. Success: ${summary.success}, Failed: ${summary.failed}`);
+    logMsg('INFO', `Reassignment run complete. Success: ${summary.success}, Failed: ${summary.failed}`);
+    if (summary.failed > 0) sendFailureEmail_(requests.length, summary);
     return { total: requests.length, success: summary.success, failed: summary.failed };
 
   } catch (e) {
@@ -91,13 +111,13 @@ function reassignSyncNow() {
 // ============================================================
 
 /**
- * MENU: "Sync Now" — runs the full worker and shows a summary alert.
+ * MENU: "Run Now" — runs the full worker and shows a summary alert.
  */
 function reassignSyncNowMenu() {
   try {
     const r = reassignSyncNow();
     SpreadsheetApp.getUi().alert(
-      `Reassignment Sync Complete\n\n` +
+      `Reassignment Run Complete\n\n` +
       `Total unassigned: ${r.total}\n` +
       `Success: ${r.success}\n` +
       `Failed: ${r.failed}`
@@ -109,7 +129,7 @@ function reassignSyncNowMenu() {
 }
 
 /**
- * MENU: "Fetch Unassigned Requests" — populates the sheet only.
+ * MENU: "Preview Unassigned Requests" — populates the sheet only.
  */
 function fetchUnassignedRequests() {
   try {
@@ -140,7 +160,7 @@ function refreshAssigneesMenu() {
   try {
     const sheet = getOrCreateReassignSheet();
     if (sheet.getLastRow() < 2) {
-      ui.alert('No requests in the sheet. Run a fetch or sync first.');
+      ui.alert('No requests in the sheet. Run Preview Unassigned Requests or Run Now first.');
       return;
     }
     refreshAssignees(sheet);
@@ -152,18 +172,23 @@ function refreshAssigneesMenu() {
 }
 
 /**
- * MENU: "Reassign Requests" — reassigns request IDs already in the sheet.
+ * MENU: "Reassign Unassigned Requests" — reassigns request IDs already in the sheet.
  */
 function reassignRequests() {
   const ui = SpreadsheetApp.getUi();
   try {
     const sheet = getOrCreateReassignSheet();
     if (sheet.getLastRow() < 2) {
-      ui.alert('No requests to reassign. Run "Fetch Unassigned Requests" first.');
+      ui.alert('No requests to reassign. Run "Preview Unassigned Requests" first.');
       return;
     }
     const summary = triggerReassignForSheet(sheet);
-    ui.alert(`Reassignment done. Success: ${summary.success}, Failed: ${summary.failed}`);
+    if (summary.success + summary.failed + summary.alreadyAssigned === 0) {
+      ui.alert('No requests to reassign. Run "Preview Unassigned Requests" first.');
+      return;
+    }
+    ui.alert(`Reassignment done. Success: ${summary.success}, Failed: ${summary.failed}` +
+      (summary.alreadyAssigned > 0 ? `, Skipped (already assigned): ${summary.alreadyAssigned}` : ''));
   } catch (e) {
     Logger.log(`reassignRequests error: ${e.toString()}`);
     ui.alert('Error: ' + e.message);
@@ -176,7 +201,7 @@ function reassignRequests() {
 
 /**
  * Fetch Open + unassigned requests, optionally restricted to specific
- * collections (by name via REASSIGN_CONFIG.COLLECTION_INCLUDE).
+ * collections (by name via CONFIG.COLLECTION_INCLUDE).
  *
  * If COLLECTION_INCLUDE is non-empty, the names are resolved to collection
  * IDs and the requests endpoint is queried once PER collection using its
@@ -184,7 +209,7 @@ function reassignRequests() {
  * returns requests across all collections.
  */
 function fetchOpenUnassignedRequests() {
-  const includeNames = REASSIGN_CONFIG.COLLECTION_INCLUDE || [];
+  const includeNames = CONFIG.COLLECTION_INCLUDE || [];
 
   // No filter configured → fetch across all collections in one pass.
   if (includeNames.length === 0) {
@@ -235,12 +260,12 @@ function fetchUnassignedForCollection(collectionId) {
   let batchCount = 0;
 
   const headers = {
-    "Authorization": `Bearer ${REASSIGN_CONFIG.API_KEY}`,
+    "Authorization": `Bearer ${CONFIG.API_KEY}`,
     "Content-Type": "application/json"
   };
 
   const afterDate = new Date();
-  afterDate.setDate(afterDate.getDate() - REASSIGN_CONFIG.LOOKBACK_DAYS);
+  afterDate.setDate(afterDate.getDate() - CONFIG.LOOKBACK_DAYS);
 
   while (true) {
     batchCount++;
@@ -296,7 +321,7 @@ function fetchUnassignedForCollection(collectionId) {
  */
 function getCollectionNameToIdMap() {
   const headers = {
-    "Authorization": `Bearer ${REASSIGN_CONFIG.API_KEY}`,
+    "Authorization": `Bearer ${CONFIG.API_KEY}`,
     "Content-Type": "application/json"
   };
 
@@ -332,14 +357,15 @@ function getCollectionNameToIdMap() {
  */
 function triggerReassignForSheet(sheet) {
   const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return { success: 0, failed: 0 };
+  if (lastRow < 2) return { success: 0, failed: 0, skipped: 0, alreadyAssigned: 0, failures: [] };
 
-  if (REASSIGN_CONFIG.AUTOMATION_ID == null || REASSIGN_CONFIG.AUTOMATION_ID === '') {
-    throw new Error('AUTOMATION_ID is not set. Add your reassignment automation ID to REASSIGN_CONFIG (see README Step 1).');
+  if (CONFIG.AUTOMATION_ID == null || CONFIG.AUTOMATION_ID === '') {
+    throw new Error('AUTOMATION_ID is not set. Add your reassignment automation ID to CONFIG (see README Step 1).');
   }
 
   const headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const idCol = headerRow.indexOf('id') + 1;
+  const assigneeCol = headerRow.indexOf('assignee') + 1;
   let resultCol = headerRow.indexOf('reassign_result') + 1;
 
   if (idCol === 0) throw new Error('Could not find an "id" column. Re-run the fetch.');
@@ -349,18 +375,49 @@ function triggerReassignForSheet(sheet) {
   }
 
   const ids = sheet.getRange(2, idCol, lastRow - 1, 1).getValues();
-  const triggerUrl = `${TRIGGER_URL_BASE}/${REASSIGN_CONFIG.AUTOMATION_ID}/trigger`;
+  // Assignee cells let us skip rows that already have an assignee (e.g. this
+  // is a repeat run, or "Refresh Assignees" showed them as assigned).
+  const assignees = assigneeCol > 0
+    ? sheet.getRange(2, assigneeCol, lastRow - 1, 1).getValues()
+    : null;
+  const triggerUrl = `${TRIGGER_URL_BASE}/${CONFIG.AUTOMATION_ID}/trigger`;
 
-  let success = 0, failed = 0;
+  let success = 0, failed = 0, skipped = 0, alreadyAssigned = 0;
+  const failures = [];   // {id, result} for each failed call (used in the alert email)
+  const abortAfter = CONFIG.ABORT_IF_FIRST_N_FAIL;
 
   for (let i = 0; i < ids.length; i++) {
     const requestId = ids[i][0];
     if (!requestId) continue;
 
+    // Don't re-POST requests that already have an assignee — reassigning
+    // them could move them to another agent.
+    if (assignees && assignees[i][0] && assignees[i][0] !== 'Unassigned') {
+      sheet.getRange(i + 2, resultCol).setValue('SKIPPED (already assigned)');
+      alreadyAssigned++;
+      continue;
+    }
+
+    // SAFEGUARD: the first N calls all failed → the problem is almost certainly
+    // systemic (bad API key, wrong AUTOMATION_ID, outage). Stop instead of
+    // hammering the API for every remaining request.
+    if (abortAfter > 0 && success === 0 && failed >= abortAfter) {
+      logMsg('ERROR',
+        `Aborting reassignment: the first ${failed} webhook call(s) all failed. ` +
+        `Check API_KEY and AUTOMATION_ID. ${ids.length - i} request(s) were not attempted.`);
+      for (let j = i; j < ids.length; j++) {
+        if (ids[j][0]) {
+          sheet.getRange(j + 2, resultCol).setValue('SKIPPED (aborted after repeated failures)');
+          skipped++;
+        }
+      }
+      break;
+    }
+
     const options = {
       method: 'post',
       contentType: 'application/json',
-      headers: { "Authorization": `Bearer ${REASSIGN_CONFIG.API_KEY}` },
+      headers: { "Authorization": `Bearer ${CONFIG.API_KEY}` },
       payload: JSON.stringify({ id: requestId }),
       muteHttpExceptions: true
     };
@@ -381,16 +438,19 @@ function triggerReassignForSheet(sheet) {
       logMsg('ERROR', `Reassign threw for request ${requestId}: ${e.message}`);
     }
 
+    if (!resultText.startsWith('OK')) failures.push({ id: requestId, result: resultText });
+
     sheet.getRange(i + 2, resultCol).setValue(resultText);
-    Utilities.sleep(REASSIGN_CONFIG.REASSIGN_DELAY_MS);   // delay between calls
+    Utilities.sleep(CONFIG.REASSIGN_DELAY_MS);   // delay between calls
   }
 
-  logMsg('INFO', `Reassign loop finished. Success: ${success}, Failed: ${failed}`);
+  logMsg('INFO', `Reassign loop finished. Success: ${success}, Failed: ${failed}` +
+    (alreadyAssigned > 0 ? `, Skipped (already assigned): ${alreadyAssigned}` : ''));
 
   // The Reassign automation runs asynchronously, so give it a moment to
   // apply before reading assignees back from the API.
   if (success > 0) {
-    Utilities.sleep(REASSIGN_CONFIG.REFRESH_SETTLE_MS);
+    Utilities.sleep(CONFIG.REFRESH_SETTLE_MS);
     const refresh = refreshAssignees(sheet);
 
     // GUARD: the automation accepted every call (HTTP 2xx) but nothing
@@ -407,7 +467,7 @@ function triggerReassignForSheet(sheet) {
     }
   }
 
-  return { success: success, failed: failed };
+  return { success: success, failed: failed, skipped: skipped, alreadyAssigned: alreadyAssigned, failures: failures };
 }
 
 /**
@@ -430,7 +490,7 @@ function refreshAssignees(sheet) {
 
   const ids = sheet.getRange(2, idCol, lastRow - 1, 1).getValues();
   const headers = {
-    "Authorization": `Bearer ${REASSIGN_CONFIG.API_KEY}`,
+    "Authorization": `Bearer ${CONFIG.API_KEY}`,
     "Content-Type": "application/json"
   };
 
@@ -475,7 +535,7 @@ function refreshAssignees(sheet) {
       logMsg('WARN', `refreshAssignees failed for ${requestId}: ${e.message}`);
     }
 
-    Utilities.sleep(REASSIGN_CONFIG.REFRESH_DELAY_MS);
+    Utilities.sleep(CONFIG.REFRESH_DELAY_MS);
   }
 
   saveUserCache();   // persist resolved names for next run
@@ -527,7 +587,7 @@ function getUserName(userId) {
     const response = UrlFetchApp.fetch(url, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${REASSIGN_CONFIG.API_KEY}`,
+        'Authorization': `Bearer ${CONFIG.API_KEY}`,
         'Content-Type': 'application/json'
       },
       muteHttpExceptions: true
@@ -556,12 +616,12 @@ function getUserName(userId) {
 
 /**
  * Enable a recurring trigger that runs reassignSyncNow() every X hours,
- * where X = REASSIGN_CONFIG.SYNC_INTERVAL_HOURS.
+ * where X = CONFIG.SYNC_INTERVAL_HOURS.
  * Apps Script's everyHours() only accepts 1, 2, 4, 6, 8, or 12.
  */
 function enableIntervalTrigger() {
   const allowed = [1, 2, 4, 6, 8, 12];
-  const hours = REASSIGN_CONFIG.SYNC_INTERVAL_HOURS;
+  const hours = CONFIG.SYNC_INTERVAL_HOURS;
 
   if (allowed.indexOf(hours) === -1) {
     const msg = `SYNC_INTERVAL_HOURS is ${hours}, but must be one of: ${allowed.join(', ')}.`;
@@ -577,10 +637,10 @@ function enableIntervalTrigger() {
     .everyHours(hours)
     .create();
 
-  logMsg('INFO', `Interval sync enabled — running every ${hours} hour(s).`);
+  logMsg('INFO', `Scheduled runs enabled — running every ${hours} hour(s).`);
   SpreadsheetApp.getUi().alert(
     'Success',
-    `Automatic sync enabled. It will run every ${hours} hour(s).`,
+    `Scheduled runs enabled. It will run every ${hours} hour(s).`,
     SpreadsheetApp.getUi().ButtonSet.OK
   );
 }
@@ -601,10 +661,10 @@ function disableIntervalTrigger() {
 
   if (deletedCount > 0) {
     logMsg('INFO', `Disabled ${deletedCount} interval trigger(s).`);
-    SpreadsheetApp.getUi().alert('Success', 'Automatic sync has been disabled.', SpreadsheetApp.getUi().ButtonSet.OK);
+    SpreadsheetApp.getUi().alert('Success', 'Scheduled runs have been disabled.', SpreadsheetApp.getUi().ButtonSet.OK);
   } else {
     logMsg('INFO', 'No interval triggers found to disable.');
-    SpreadsheetApp.getUi().alert('Info', 'No automatic sync was running.', SpreadsheetApp.getUi().ButtonSet.OK);
+    SpreadsheetApp.getUi().alert('Info', 'No scheduled runs were enabled.', SpreadsheetApp.getUi().ButtonSet.OK);
   }
 }
 
@@ -617,27 +677,6 @@ function isIntervalTriggerEnabled() {
 }
 
 // ============================================================
-// RESET / STATE
-// ============================================================
-
-function getLastReassignTime() {
-  return PropertiesService.getScriptProperties().getProperty(LAST_REASSIGN_PROPERTY);
-}
-
-function setLastReassignTime(timestamp) {
-  PropertiesService.getScriptProperties().setProperty(LAST_REASSIGN_PROPERTY, timestamp);
-}
-
-/**
- * Reset — clears the last reassignment timestamp.
- */
-function resetReassignSync() {
-  PropertiesService.getScriptProperties().deleteProperty(LAST_REASSIGN_PROPERTY);
-  logMsg('INFO', 'Reassignment sync reset — last-run timestamp cleared.');
-  SpreadsheetApp.getUi().alert('Success', 'Reassignment sync has been reset (last-run timestamp cleared).', SpreadsheetApp.getUi().ButtonSet.OK);
-}
-
-// ============================================================
 // HELPERS
 // ============================================================
 
@@ -646,10 +685,10 @@ function resetReassignSync() {
  */
 function getOrCreateReassignSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(REASSIGN_CONFIG.SHEET_NAME);
+  let sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
   if (!sheet) {
-    sheet = ss.insertSheet(REASSIGN_CONFIG.SHEET_NAME);
-    Logger.log(`Created sheet: ${REASSIGN_CONFIG.SHEET_NAME}`);
+    sheet = ss.insertSheet(CONFIG.SHEET_NAME);
+    Logger.log(`Created sheet: ${CONFIG.SHEET_NAME}`);
   }
   return sheet;
 }
@@ -668,7 +707,10 @@ function writeRequestsToSheet(sheet, requests) {
   headerRange.setBackground('#f0f0f0');
 
   if (!requests || requests.length === 0) {
-    sheet.getRange(2, 1).setValue(`No unassigned Open requests in the last ${REASSIGN_CONFIG.LOOKBACK_DAYS} days.`);
+    // Put the note in the "title" column, NOT "id": reassign/refresh read the
+    // id column and must not mistake the message for a request ID.
+    sheet.getRange(2, 2).setValue(`No unassigned Open requests in the last ${CONFIG.LOOKBACK_DAYS} days.`)
+      .setFontStyle('italic').setFontColor('#666666');
     return;
   }
 
@@ -685,6 +727,58 @@ function writeRequestsToSheet(sheet, requests) {
 
   sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
   sheet.autoResizeColumns(1, headers.length);
+}
+
+// ============================================================
+// EMAIL ALERTS
+// ============================================================
+
+/**
+ * Email a summary of failed reassign calls. Skipped if EMAIL_CONFIG.TO is empty.
+ * Mirrors sendRunEmail_() in channel_sync.gs. Never throws — an email problem
+ * must not fail the run.
+ */
+function sendFailureEmail_(total, summary) {
+  if (!EMAIL_CONFIG.TO) {
+    logMsg('INFO', 'Failure email skipped: EMAIL_CONFIG.TO is empty.');
+    return;
+  }
+
+  const timestamp = Utilities.formatDate(new Date(), CONFIG.TIMEZONE, 'HH:mm:ss dd MMM yyyy');
+  const subject = `${EMAIL_CONFIG.SUBJECT_PREFIX}[${timestamp}] - ${summary.failed} failed reassign call(s)`;
+
+  const bodyLines = [
+    'Auto-reassign run completed with failures:',
+    '',
+    `Unassigned requests found: ${total}`,
+    `Reassign calls succeeded: ${summary.success}`,
+    `Reassign calls failed: ${summary.failed}`
+  ];
+  if (summary.skipped > 0) {
+    bodyLines.push(`Not attempted (run aborted after repeated failures): ${summary.skipped}`);
+  }
+  bodyLines.push('', 'Failures:');
+  summary.failures.forEach(f => bodyLines.push(`- Request ${f.id}: ${f.result}`));
+  bodyLines.push('', `See the "${CONFIG.LOG_SHEET_NAME}" tab for details.`);
+  const body = bodyLines.join('\n');
+
+  try {
+    GmailApp.sendEmail(EMAIL_CONFIG.TO, subject, body, {
+      from: EMAIL_CONFIG.FROM,
+      name: EMAIL_CONFIG.SENDER_NAME,
+      replyTo: EMAIL_CONFIG.FROM
+    });
+  } catch (e) {
+    // Fallback if alias/from is not permitted in this environment
+    try {
+      MailApp.sendEmail(EMAIL_CONFIG.TO, subject, body, {
+        name: EMAIL_CONFIG.SENDER_NAME,
+        replyTo: EMAIL_CONFIG.FROM
+      });
+    } catch (e2) {
+      logMsg('WARN', `Failed to send failure email: ${e2.message}`);
+    }
+  }
 }
 
 // ============================================================
@@ -705,22 +799,22 @@ function logMsg(level, message) {
 
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    let logSheet = ss.getSheetByName(REASSIGN_CONFIG.LOG_SHEET_NAME);
+    let logSheet = ss.getSheetByName(CONFIG.LOG_SHEET_NAME);
     if (!logSheet) {
-      logSheet = ss.insertSheet(REASSIGN_CONFIG.LOG_SHEET_NAME);
+      logSheet = ss.insertSheet(CONFIG.LOG_SHEET_NAME);
       logSheet.getRange(1, 1, 1, 3)
-        .setValues([[`Timestamp (${REASSIGN_CONFIG.TIMEZONE})`, 'Level', 'Message']])
+        .setValues([[`Timestamp (${CONFIG.TIMEZONE})`, 'Level', 'Message']])
         .setFontWeight('bold')
         .setBackground('#f0f0f0');
       logSheet.setFrozenRows(1);
     }
 
-    const ts = Utilities.formatDate(new Date(), REASSIGN_CONFIG.TIMEZONE, "yyyy-MM-dd HH:mm:ss");
+    const ts = Utilities.formatDate(new Date(), CONFIG.TIMEZONE, "yyyy-MM-dd HH:mm:ss");
     logSheet.appendRow([ts, level, message]);
 
     // Trim old rows so the tab doesn't grow unbounded.
     const rowCount = logSheet.getLastRow();
-    const maxRows = REASSIGN_CONFIG.LOG_MAX_ROWS;
+    const maxRows = CONFIG.LOG_MAX_ROWS;
     if (rowCount > maxRows + 1) {                 // +1 for header
       const excess = rowCount - (maxRows + 1);
       logSheet.deleteRows(2, excess);             // delete oldest (just below header)
@@ -732,16 +826,16 @@ function logMsg(level, message) {
 }
 
 /**
- * MENU: "View Recent Logs" — shows the last ~20 log entries in a dialog,
+ * MENU: "View Logs" — shows the last ~20 log entries in a dialog,
  * so you can diagnose a run without leaving the sheet.
  */
 function showLogs() {
   const ui = SpreadsheetApp.getUi();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const logSheet = ss.getSheetByName(REASSIGN_CONFIG.LOG_SHEET_NAME);
+  const logSheet = ss.getSheetByName(CONFIG.LOG_SHEET_NAME);
 
   if (!logSheet || logSheet.getLastRow() < 2) {
-    ui.alert('Logs', 'No log entries yet. Run a sync first.', ui.ButtonSet.OK);
+    ui.alert('Logs', 'No log entries yet. Run Now first.', ui.ButtonSet.OK);
     return;
   }
 
@@ -755,7 +849,7 @@ function showLogs() {
 
   ui.alert(
     `Recent Logs (last ${showCount})`,
-    text + '\n\nFull history is in the "' + REASSIGN_CONFIG.LOG_SHEET_NAME + '" tab.',
+    text + '\n\nFull history is in the "' + CONFIG.LOG_SHEET_NAME + '" tab.',
     ui.ButtonSet.OK
   );
 }
@@ -766,7 +860,7 @@ function showLogs() {
 function clearLogs() {
   const ui = SpreadsheetApp.getUi();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const logSheet = ss.getSheetByName(REASSIGN_CONFIG.LOG_SHEET_NAME);
+  const logSheet = ss.getSheetByName(CONFIG.LOG_SHEET_NAME);
 
   if (!logSheet || logSheet.getLastRow() < 2) {
     ui.alert('Logs', 'Nothing to clear.', ui.ButtonSet.OK);
@@ -787,17 +881,16 @@ function clearLogs() {
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('ClearFeed Reassign')
-    .addItem('🔄 Sync Now', 'reassignSyncNowMenu')
+    .addItem('▶️ Run Now', 'reassignSyncNowMenu')
     .addSeparator()
-    .addItem('📥 Fetch Unassigned Requests', 'fetchUnassignedRequests')
-    .addItem('🔁 Reassign Requests', 'reassignRequests')
+    .addItem('📥 Preview Unassigned Requests', 'fetchUnassignedRequests')
+    .addItem('🔁 Reassign Unassigned Requests', 'reassignRequests')
     .addItem('🔃 Refresh Assignees', 'refreshAssigneesMenu')
     .addSeparator()
-    .addItem('⏰ Enable Auto Sync', 'enableIntervalTrigger')
-    .addItem('⏹️ Disable Auto Sync', 'disableIntervalTrigger')
+    .addItem('⏰ Enable Scheduled Runs', 'enableIntervalTrigger')
+    .addItem('⏹️ Disable Scheduled Runs', 'disableIntervalTrigger')
     .addSeparator()
-    .addItem('📋 View Recent Logs', 'showLogs')
+    .addItem('📋 View Logs', 'showLogs')
     .addItem('🧹 Clear Logs', 'clearLogs')
-    .addItem('♻️ Reset Sync', 'resetReassignSync')
     .addToUi();
 }
