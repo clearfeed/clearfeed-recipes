@@ -504,7 +504,8 @@ function getRequestHeaders(cfData) {
     'author',        // request.author.id
     'author_email',   // Note: This field is not provided by the ClearFeed API
     'assigned_team',  // request.assigned_team.id
-    'tickets'
+    'tickets',
+    'messages'
   ];
 
   // Append extra columns using the constant
@@ -660,13 +661,15 @@ function extractRequestData(request, headers, cfData) {
  */
 function formatMessages(messages) {
   if (!Array.isArray(messages) || messages.length === 0) {
-    return [];
+    return '';  // Return empty string
   }
 
   return messages.map(message => {
-    const prefix = message.is_responder ? "r" : "nr";
-    return [prefix, message.text || ""];
-  });
+    const responderTag = message.is_responder ? '[R] ' : '[NR] ';
+    const author = message.author ? getUserName(message.author) : 'Unknown';
+    const text = message.text || '';
+    return `${responderTag}${author}: ${text}`;
+  }).join('\n\n');  // Return joined string
 }
 
 /**
